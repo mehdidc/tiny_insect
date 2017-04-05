@@ -15,6 +15,7 @@ import torch.utils.data
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
+from torchvision.models.alexnet import alexnet
 from torchvision.models.resnet import resnet50
 from torchvision.models.inception import inception_v3 
 from torch.autograd import Variable
@@ -39,13 +40,14 @@ if __name__ == '__main__':
     gen = torch.load('/home/mcherti/work/code/external/ppgn/generator.th')
     gen = gen.cuda()
 
-    
     #clf = torch.load('pytorch_pretrained/clf-3eef1ef7-9384-48aa-bce1-7dac309b0ee1.th')
     #clf = clf.cuda()
+    #clf = alexnet(pretrained=True)
+    #clf = clf.cuda()
+    #clf = inception_v3(pretrained=True)
     clf = resnet50(pretrained=True)
     clf = clf.cuda()
-    #clf = inception_v3(pretrained=True)
-    #clf = clf.cuda()
+    clf.eval()
 
     clf_mean = np.array([0.485, 0.456, 0.406], dtype='float32')
     clf_mean = clf_mean[np.newaxis, :, np.newaxis, np.newaxis]
@@ -66,7 +68,7 @@ if __name__ == '__main__':
         #x = nn.Sigmoid()(x)
         return x
 
-    h = Variable(torch.randn(1, 4096), requires_grad=True).cuda()
+    h = Variable(torch.randn(16, 4096), requires_grad=True).cuda()
     h_vel = torch.zeros(h.size(0), h.size(1)).cuda()
     h_grad = None
     def register_grad(g):
@@ -83,14 +85,14 @@ if __name__ == '__main__':
         x = x / clf_std.repeat(x.size(0), 1, x.size(2), x.size(3))
         y = clf(x)
         y = nn.Softmax()(y)
-        #obj = compute_objectness(y)
-        obj = y[:, 0].mean()
+        obj = compute_objectness(y)
+        #obj = y[:, 7].mean()
         obj.backward()
         
-        g = (h_grad.data / h_grad.data.abs().mean()) #+ 0.005 * h.data * 2.
+        g = (h_grad.data / h_grad.data.abs().mean()) + 0.0005 * h.data * 2.
         h_vel = h_vel * 0.9 + g * 0.1
-        h.data += 0.01  * g
-        h.data.clamp_(0, 30)
+        h.data += 0.1  * h_vel
+        h.data.clamp_(0, 20)
  
         if i % 10 == 0:
             vutils.save_image(img.data[0:16,:,16:-16,16:-16], 'sample.png')

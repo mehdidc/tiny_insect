@@ -1,5 +1,5 @@
 import torch.utils.data as data
-
+from collections import defaultdict
 from PIL import Image
 import os
 import os.path
@@ -37,6 +37,20 @@ def make_dataset(dir, class_to_idx):
 
     return images
 
+def uniformize_dataset(images):
+    freq = defaultdict(int)
+    for path, class_idx in images:
+        freq[class_idx] += 1
+    print(freq)
+    total = len(images)
+    max_freq = max(freq.values())
+
+    resampled_images = []
+    for path, class_idx in images:
+        nb = int(max_freq / freq[class_idx])
+        resampled_images.extend([(path, class_idx)] * nb)
+    print(len(images), len(resampled_images))
+    return resampled_images
 
 def default_loader(path):
     return Image.open(path).convert('RGB')
@@ -45,13 +59,14 @@ def default_loader(path):
 class ImageFolder(data.Dataset):
 
     def __init__(self, root, transform=None, target_transform=None,
-                 loader=default_loader):
+                 loader=default_loader, uniformize=False):
         classes, class_to_idx = find_classes(root)
         imgs = make_dataset(root, class_to_idx)
         if len(imgs) == 0:
             raise(RuntimeError("Found 0 images in subfolders of: " + root + "\n"
                                "Supported image extensions are: " + ",".join(IMG_EXTENSIONS)))
-
+        if uniformize:
+            imgs = uniformize_dataset(imgs)
         self.root = root
         self.imgs = imgs
         self.classes = classes

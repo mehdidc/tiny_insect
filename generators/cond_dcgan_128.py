@@ -1,5 +1,4 @@
-# Like Auxliary classifiers GAN paper : https://arxiv.org/abs/1610.09585
-
+# Like conditional gan paper : https://arxiv.org/abs/1411.1784 from 128x128 image
 from __future__ import print_function
 from skimage.io import imsave
 import argparse
@@ -17,6 +16,9 @@ import torchvision.utils as vutils
 from torch.autograd import Variable
 from keras.utils.np_utils import to_categorical
 
+from machinedesign.viz import grid_of_images
+
+from loader import ImageFolder
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -56,14 +58,14 @@ if __name__ == '__main__':
 
     if opt.dataset in ['imagenet', 'folder', 'lfw']:
         # folder dataset
-        dataset = dset.ImageFolder(root=opt.dataroot,
+        dataset = ImageFolder(root=opt.dataroot,
                                    transform=transforms.Compose([
                                        transforms.Scale(opt.imageSize),
                                        transforms.CenterCrop(opt.imageSize),
                                        transforms.RandomHorizontalFlip(),
                                        transforms.ToTensor(),
                                        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                                   ]))
+                                   ]), uniformize=True)
     elif opt.dataset == 'lsun':
         dataset = dset.LSUN(db_path=opt.dataroot, classes=['bedroom_train'],
                             transform=transforms.Compose([
@@ -122,6 +124,11 @@ if __name__ == '__main__':
                 nn.ConvTranspose2d(ngf * 2,     ngf, 4, 2, 1, bias=False),
                 nn.BatchNorm2d(ngf),
                 nn.ReLU(True),
+
+                nn.ConvTranspose2d(ngf,     ngf, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(ngf),
+                nn.ReLU(True),
+     
                 # state size. (ngf) x 32 x 32
                 nn.ConvTranspose2d(    ngf,      nc, 4, 2, 1, bias=False),
                 nn.Tanh()
@@ -145,7 +152,7 @@ if __name__ == '__main__':
             self.ngpu = ngpu
             self.main = nn.Sequential(
                 # input is (nc) x 64 x 64
-                nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
+                nn.Conv2d(nc + nb_classes, ndf, 4, 2, 1, bias=False),
                 nn.LeakyReLU(0.2, inplace=True),
                 # state size. (ndf) x 32 x 32
                 nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
@@ -159,15 +166,21 @@ if __name__ == '__main__':
                 nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
                 nn.BatchNorm2d(ndf * 8),
                 nn.LeakyReLU(0.2, inplace=True),
+
+                nn.Conv2d(ndf * 8, ndf * 8, 4, 2, 1, bias=False),
+                nn.BatchNorm2d(ndf * 8),
+                nn.LeakyReLU(0.2, inplace=True),
+ 
                 # state size. (ndf*8) x 4 x 4
-                nn.Conv2d(ndf * 8,  1 + nb_classes, 4, 1, 0, bias=False),
+                nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False),
+                nn.Sigmoid()
             )
         def forward(self, input):
             gpu_ids = None
             if isinstance(input.data, torch.cuda.FloatTensor) and self.ngpu > 1:
                 gpu_ids = range(self.ngpu)
             output = nn.parallel.data_parallel(self.main, input, gpu_ids)
-            return output.view(-1, 1 + nb_classes)
+            return output.view(-1, 1)
 
     netD = _netD(ngpu)
     netD.apply(weights_init)
@@ -200,8 +213,6 @@ if __name__ == '__main__':
         criterion.cuda()
         input, label = input.cuda(), label.cuda()
         noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
-    
-    aux_criterion = nn.CrossEntropyLoss().cuda()
 
     input = Variable(input)
     label = Variable(label)
@@ -214,11 +225,14 @@ if __name__ == '__main__':
 
     for epoch in range(opt.niter):
         for i, data in enumerate(dataloader):
+            ############################
+            # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
+            ###########################
+            # train with real
             netD.zero_grad()
             real_cpu, real_classes = data
 
             real_classes = real_classes.long().view(-1, 1)
-            real_classes_var = Variable(real_classes[:, 0]).cuda()
             batch_size = real_cpu.size(0)
             
             y_onehot = torch.zeros(batch_size, nb_classes)
@@ -228,14 +242,11 @@ if __name__ == '__main__':
             y_onehot = y_onehot.repeat(1, 1, real_cpu.size(2), real_cpu.size(3))
             real_cpu_with_class = torch.cat((real_cpu, y_onehot), 1)
 
-            input.data.resize_(real_cpu.size()).copy_(real_cpu)
+            input.data.resize_(real_cpu_with_class.size()).copy_(real_cpu_with_class)
             label.data.resize_(batch_size).fill_(real_label)
     
             output = netD(input)
-            errD_real = (
-                criterion(nn.Sigmoid()(output[:, 0]), label) + 
-                aux_criterion((output[:, 1:]), real_classes_var)
-            )
+            errD_real = criterion(output, label)
             errD_real.backward()
             D_x = output.data.mean()
 
@@ -245,13 +256,11 @@ if __name__ == '__main__':
             noise.data.resize_(z.size()).copy_(z)
             fake = netG(noise)
             
-            label.data.fill_(fake_label)
-            output = netD(fake.detach())
-            errD_fake = (
-                criterion(nn.Sigmoid()(output[:, 0]), label) + 
-                aux_criterion((output[:, 1:]), real_classes_var)
-            )
+            fake_with_class = torch.cat( (fake, Variable(y_onehot).cuda()), 1)
 
+            label.data.fill_(fake_label)
+            output = netD(fake_with_class.detach())
+            errD_fake = criterion(output, label)
             errD_fake.backward()
             D_G_z1 = output.data.mean()
             errD = errD_real + errD_fake
@@ -262,11 +271,8 @@ if __name__ == '__main__':
             ###########################
             netG.zero_grad()
             label.data.fill_(real_label) # fake labels are real for generator cost
-            output = netD(fake)
-            errG = (
-                criterion(nn.Sigmoid()(output[:, 0]), label) + 
-                aux_criterion((output[:, 1:]), real_classes_var)
-            )
+            output = netD(fake_with_class)
+            errG = criterion(output, label)
             errG.backward()
             D_G_z2 = output.data.mean()
             optimizerG.step()
