@@ -18,9 +18,40 @@ import torch.utils.data
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
+from torch.utils.data.sampler import Sampler
 from torch.autograd import Variable
 import pandas as pd
 import sys
+sys.path.append('../generators')
+from loader import ImageFolder
+
+"""
+z.data.normal_()
+onehot.data.zero_()
+u.uniform_()
+onehot.data.scatter_(1, u.max(1)[1], 1)
+g_input = torch.cat((z, onehot), 1)
+out = G(g_input)
+out = nn.UpsamplingBilinear2d(scale_factor=2)(out)
+input = out
+"""
+
+class RandomSampler(Sampler):
+    """Samples elements randomly, without replacement.
+    Arguments:
+        data_source (Dataset): dataset to sample from
+    """
+
+    def __init__(self, data_source):
+        self.num_samples = len(data_source)
+        self.perm = torch.randperm(self.num_samples).long()
+
+    def __iter__(self):
+        return iter(self.perm)
+
+    def __len__(self):
+        return self.num_samples
+
 
 nz = 100
 nb_classes = 18
@@ -97,11 +128,10 @@ class ConvStudent(nn.Module):
         return x
 
 def norm(x, mean, std):
-    x = (x + 1) / 2.
-    x += 1
-    x /= 2.
-    x -= mean.repeat(x.size(0), 1, x.size(2), x.size(3))
-    x /= std.repeat(x.size(0), 1, x.size(2), x.size(3))
+    x = x + 1
+    x = x / 2
+    x = x - mean.repeat(x.size(0), 1, x.size(2), x.size(3))
+    x = x / std.repeat(x.size(0), 1, x.size(2), x.size(3))
     return x
 
 from torch.nn.init import xavier_uniform
@@ -122,14 +152,14 @@ def get_acc(pred, true):
     _, true_classes = true.max(1)
     return (pred_classes == true_classes).float().mean()
 
-def main(*, classifier='../teachers/clf-256-resnet/clf.th', 
-        generator='../generators/samples/samples_128_cond_3/netG_epoch_7.pth', 
-        batchSize=32, 
-        nz=100, 
-        niter=100000, 
-        no=18, 
-        lr=1e-4, 
-        dataroot='/home/mcherti/work/data/insects/img_classes'):
+def train(*, classifier='../teachers/clf-256-resnet/clf.th', 
+            generator='../generators/samples/samples_128_cond_3/netG_epoch_7.pth', 
+            batchSize=32, 
+            nz=100, 
+            niter=100000, 
+            nc=18, 
+            lr=1e-4, 
+            dataroot='/home/mcherti/work/data/insects/train_img_classes'):
     sys.path.append(os.path.dirname(classifier))
     clf = torch.load(classifier)
 
@@ -149,7 +179,8 @@ def main(*, classifier='../teachers/clf-256-resnet/clf.th',
     G.load_state_dict(torch.load(generator))
     G = G.cuda()
     
-    S = ConvStudent(3, 32, 32, no)
+    #S = ConvStudent(3, 32, 32, nc)
+    S = MLPStudent(3, 32, 32, nc)
     S.apply(weights_init)
     S = S.cuda()
     
@@ -160,7 +191,7 @@ def main(*, classifier='../teachers/clf-256-resnet/clf.th',
     z = torch.randn(batchSize, nz, 1, 1)
     z = Variable(z)
     z = z.cuda()
-    onehot = torch.zeros(batchSize, no, 1, 1)
+    onehot = torch.zeros(batchSize, nc, 1, 1)
     onehot = Variable(onehot)
     onehot = onehot.cuda()
 
@@ -168,6 +199,7 @@ def main(*, classifier='../teachers/clf-256-resnet/clf.th',
     u = u.cuda()
 
     optimizer = optim.SGD(S.parameters(), lr=lr, momentum=0.9, nesterov=True)
+    #optimizer = optim.Adam(S.parameters(), lr=lr)
     avg_loss = 0.
     avg_acc = 0.
 
@@ -177,27 +209,40 @@ def main(*, classifier='../teachers/clf-256-resnet/clf.th',
            transforms.ToTensor(),
            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
-    dataset = dset.ImageFolder(root=dataroot, transform=transform)
-    dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=batchSize,
-        shuffle=False,
-        num_workers=8)
-    j = 0
+    dataset = ImageFolder(root=dataroot, transform=transform)
+   
+    source = 'generator'
+
+    if source == 'dataset':
+        dataloader = torch.utils.data.DataLoader(
+            dataset, batch_size=batchSize,
+            sampler=RandomSampler(dataset),
+            num_workers=8)
+    elif source == 'generator':
+        nb_minibatches = 1000
+        class Loader:
+            def __iter__(self):
+                torch.cuda.manual_seed(42)
+                for _ in range(nb_minibatches):
+                    z.data.normal_()
+                    onehot.data.zero_()
+                    u.uniform_()
+                    classes = u.max(1)[1]
+                    onehot.data.scatter_(1, classes, 1)
+                    g_input = torch.cat((z, onehot), 1)
+                    out = G(g_input)
+                    out = nn.UpsamplingBilinear2d(scale_factor=2)(out)
+                    input = out.data
+                    yield input, classes
+            
+            def __len__(self):
+                return nb_minibatches
+        dataloader = Loader()
+    
     stats = defaultdict(list)
-
-
     yt = torch.zeros(len(dataloader) * batchSize, 18)
+    j = 0
     for i in range(niter):
-        """
-        z.data.normal_()
-        onehot.data.zero_()
-        u.uniform_()
-        onehot.data.scatter_(1, u.max(1)[1], 1)
-        g_input = torch.cat((z, onehot), 1)
-        out = G(g_input)
-        out = nn.UpsamplingBilinear2d(scale_factor=2)(out)
-        input = out
-        """
         for b, (X, y) in enumerate(dataloader):
             t = time.time()
             input.data.resize_(X.size()).copy_(X)
@@ -209,9 +254,8 @@ def main(*, classifier='../teachers/clf-256-resnet/clf.th',
             else:
                 y_true = yt[b * batchSize:b * batchSize + input.size(0)]
                 y_true = Variable(y_true).cuda()
-
-            input_ = nn.AvgPool2d(8, 8)(input)
-            y_pred = S(input_)
+            #input_ = nn.AvgPool2d(8, 8)(input)
+            y_pred = S(input)
             
             loss = ((y_pred - y_true) ** 2).mean()
             loss.backward()
@@ -230,5 +274,60 @@ def main(*, classifier='../teachers/clf-256-resnet/clf.th',
             j += 1
         torch.save(S, 'student.th')
 
+def eval(*,
+         student='student.th', 
+         classifier='../teachers/clf-256-resnet/clf.th', 
+         dataroot='/home/mcherti/work/data/insects/train_img_classes', 
+         batchSize=32, 
+         nc=18):
+
+    sys.path.append(os.path.dirname(classifier))
+    clf = torch.load(classifier)
+    clf_mean = np.array([0.485, 0.456, 0.406], dtype='float32')
+    clf_mean = clf_mean[np.newaxis, :, np.newaxis, np.newaxis]
+    clf_mean = torch.from_numpy(clf_mean)
+    clf_mean = Variable(clf_mean)
+    clf_std = np.array([0.229, 0.224, 0.225], dtype='float32')
+    clf_std = clf_std[np.newaxis, :, np.newaxis, np.newaxis]
+    clf_std = torch.from_numpy(clf_std)
+    clf_std = Variable(clf_std)
+
+    clf_mean = clf_mean.cuda()
+    clf_std = clf_std.cuda()
+
+    S = torch.load(student)
+    input = torch.zeros(batchSize, 3, 256, 256)
+    input = Variable(input)
+    input = input.cuda()
+
+    transform = transforms.Compose([
+           transforms.Scale(256),
+           transforms.CenterCrop(256),
+           transforms.ToTensor(),
+           transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    ])
+    dataset = ImageFolder(root=dataroot, transform=transform)
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=batchSize,
+        sampler=RandomSampler(dataset),
+        num_workers=8)
+    accs_student = []
+    accs_teacher = []
+    for b, (X, y) in enumerate(dataloader):
+        t = time.time()
+        batch_size = X.size(0)
+        input.data.resize_(X.size()).copy_(X)
+        y_true = torch.zeros(batch_size, nc)
+        y_true.scatter_(1, y.view(y.size(0), 1), 1)
+        y_teacher = clf(norm(input, clf_mean, clf_std))
+        #input_ = nn.AvgPool2d(8, 8)(input)
+        y_student = S(input)
+        acc_teacher = get_acc(y_true, y_teacher.data.cpu())
+        acc_student = get_acc(y_true, y_student.data.cpu())
+        accs_student.append(acc_student)
+        accs_teacher.append(acc_teacher)
+        print('acc student : {:.3f}, acc teacher : {:.3f}'.format(np.mean(accs_student), np.mean(accs_teacher)))
+        dt = time.time() - t
+
 if __name__ == '__main__':
-    run(main)
+    run(train, eval)

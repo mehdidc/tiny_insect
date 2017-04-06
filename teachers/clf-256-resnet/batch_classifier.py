@@ -30,8 +30,7 @@ class BatchClassifier(object):
         nb_valid_minibatches = _get_nb_minibatches(nb_valid, batch_size)
         criterion = nn.CrossEntropyLoss().cuda()
 
-        filename = 'clf-{}.th'.format(uuid.uuid4())
-        print(filename)
+        filename = 'clf.th'
  
         for epoch in range(nb_epochs):
             t0 = time.time()
