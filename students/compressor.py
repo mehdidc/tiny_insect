@@ -1,5 +1,6 @@
 from __future__ import print_function
 from collections import defaultdict
+import time
 from clize import run
 from itertools import chain
 import numpy as np
@@ -20,7 +21,6 @@ import torchvision.utils as vutils
 from torch.autograd import Variable
 import pandas as pd
 import sys
-
 
 nz = 100
 nb_classes = 18
@@ -122,8 +122,8 @@ def get_acc(pred, true):
     _, true_classes = true.max(1)
     return (pred_classes == true_classes).float().mean()
 
-def main(*, classifier='pytorch_pretrained/clf-256-resnet/clf.th', 
-        generator='samples_128_cond_3/netG_epoch_7.pth', 
+def main(*, classifier='../teachers/clf-256-resnet/clf.th', 
+        generator='../generators/samples/samples_128_cond_3/netG_epoch_7.pth', 
         batchSize=32, 
         nz=100, 
         niter=100000, 
@@ -168,7 +168,6 @@ def main(*, classifier='pytorch_pretrained/clf-256-resnet/clf.th',
     u = u.cuda()
 
     optimizer = optim.SGD(S.parameters(), lr=lr, momentum=0.9, nesterov=True)
-    #optimizer = optim.Adam(S.parameters(), lr=lr)
     avg_loss = 0.
     avg_acc = 0.
 
@@ -181,10 +180,13 @@ def main(*, classifier='pytorch_pretrained/clf-256-resnet/clf.th',
     dataset = dset.ImageFolder(root=dataroot, transform=transform)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=batchSize,
-        shuffle=True, 
-        num_workers=1)
+        shuffle=False,
+        num_workers=8)
     j = 0
     stats = defaultdict(list)
+
+
+    yt = torch.zeros(len(dataloader) * batchSize, 18)
     for i in range(niter):
         """
         z.data.normal_()
@@ -197,24 +199,34 @@ def main(*, classifier='pytorch_pretrained/clf-256-resnet/clf.th',
         input = out
         """
         for b, (X, y) in enumerate(dataloader):
+            t = time.time()
             input.data.resize_(X.size()).copy_(X)
             S.zero_grad()
-            y_true = clf(norm(input, clf_mean, clf_std))
+            
+            if i == 0:
+                y_true = clf(norm(input, clf_mean, clf_std))
+                yt[b * batchSize:b * batchSize + input.size(0)].copy_(y_true.data)
+            else:
+                y_true = yt[b * batchSize:b * batchSize + input.size(0)]
+                y_true = Variable(y_true).cuda()
+
             input_ = nn.AvgPool2d(8, 8)(input)
             y_pred = S(input_)
             
             loss = ((y_pred - y_true) ** 2).mean()
             loss.backward()
             optimizer.step()
+            dt = time.time() - t
             acc = get_acc(y_true, y_pred)
             stats['acc'].append(acc.data[0])
             stats['loss'].append(loss.data[0])
+            stats['time'].append(dt)
             
             avg_loss = avg_loss * 0.99 + loss.data[0] * 0.01
             avg_acc = avg_acc * 0.99 + acc.data[0] * 0.01
             if j % 100 == 0:
                 pd.DataFrame(stats).to_csv('stats.csv', index=False)
-                print('[{}/{}] batch {}/{}. moving_loss:{:.3f} moving_acc:{:.3f}'.format(i, niter, b, len(dataloader), avg_loss, avg_acc))
+                print('[{}/{}] batch {}/{}. moving_loss:{:.3f} moving_acc:{:.3f}, time : {:.3f}'.format(i, niter, b, len(dataloader), avg_loss, avg_acc, dt))
             j += 1
         torch.save(S, 'student.th')
 
