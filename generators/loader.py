@@ -49,7 +49,6 @@ def uniformize_dataset(images):
     for path, class_idx in images:
         nb = int(max_freq / freq[class_idx])
         resampled_images.extend([(path, class_idx)] * nb)
-    print(len(images), len(resampled_images))
     return resampled_images
 
 def default_loader(path):

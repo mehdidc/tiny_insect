@@ -68,7 +68,7 @@ if __name__ == '__main__':
                                        transforms.RandomHorizontalFlip(),
                                        transforms.ToTensor(),
                                        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                                   ]), uniformize=False)
+                                   ]), uniformize=True)
     elif opt.dataset == 'lsun':
         dataset = dset.LSUN(db_path=opt.dataroot, classes=['bedroom_train'],
                             transform=transforms.Compose([
@@ -132,9 +132,9 @@ if __name__ == '__main__':
                 nn.BatchNorm2d(ngf),
                 nn.ReLU(True),
 
-                nn.ConvTranspose2d(ngf,     ngf, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ngf),
-                nn.ReLU(True),
+                #nn.ConvTranspose2d(ngf,     ngf, 4, 2, 1, bias=False),
+                #nn.BatchNorm2d(ngf),
+                #nn.ReLU(True),
  
                 # state size. (ngf) x 32 x 32
                 nn.ConvTranspose2d(    ngf,      nc, 4, 2, 1, bias=False),
@@ -142,10 +142,7 @@ if __name__ == '__main__':
                 # state size. (nc) x 64 x 64
             )
         def forward(self, input):
-            gpu_ids = None
-            if isinstance(input.data, torch.cuda.FloatTensor) and self.ngpu > 1:
-                gpu_ids = range(self.ngpu)
-            return nn.parallel.data_parallel(self.main, input, gpu_ids)
+            return self.main(input)
 
     netG = _netG(ngpu)
     netG.apply(weights_init)
@@ -178,20 +175,17 @@ if __name__ == '__main__':
                 nn.BatchNorm2d(ndf * 8),
                 nn.LeakyReLU(0.2, inplace=True),
 
-                nn.Conv2d(ndf * 8, ndf * 8, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ndf * 8),
-                nn.LeakyReLU(0.2, inplace=True),
+                #nn.Conv2d(ndf * 8, ndf * 8, 4, 2, 1, bias=False),
+                #nn.BatchNorm2d(ndf * 8),
+                #nn.LeakyReLU(0.2, inplace=True),
  
                 # state size. (ndf*8) x 4 x 4
                 nn.Conv2d(ndf * 8,  1, 4, 1, 0, bias=False),
                 nn.Sigmoid()
             )
         def forward(self, input):
-            gpu_ids = None
-            if isinstance(input.data, torch.cuda.FloatTensor) and self.ngpu > 1:
-                gpu_ids = range(self.ngpu)
-            output = nn.parallel.data_parallel(self.main, input, gpu_ids)
-            return output.view(-1, 1)
+            out = self.main(input)
+            return out.view(-1, 1)
 
     netD = _netD(ngpu)
     netD.apply(weights_init)
@@ -225,8 +219,8 @@ if __name__ == '__main__':
         input, label = input.cuda(), label.cuda()
         noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
 
-    sys.path.append('pytorch_pretrained')
-    clf = torch.load('pytorch_pretrained/clf-256-resnet.th')
+    sys.path.append('../teachers/clf-256-resnet')
+    clf = torch.load('../teachers/clf-256-resnet/clf.th')
     clf = clf.cuda()
 
     clf_mean = np.array([0.485, 0.456, 0.406], dtype='float32')
@@ -273,7 +267,9 @@ if __name__ == '__main__':
             input.data.resize_(real_cpu.size()).copy_(real_cpu)
             label.data.resize_(batch_size).fill_(real_label)
             
-            clf_output = clf(norm(input))
+            input_ = norm(nn.UpsamplingBilinear2d(scale_factor=2)(input))
+            clf_output = clf(input_)
+
             output = netD(input)
             errD_real = (
                 criterion(output, label) + 
@@ -294,7 +290,9 @@ if __name__ == '__main__':
             
             label.data.fill_(fake_label)
             output = netD(fake.detach())
-            clf_output = clf(norm(fake))
+
+            fake_ = norm(nn.UpsamplingBilinear2d(scale_factor=2)(fake))
+            clf_output = clf(fake_)
             errD_fake = (
                 criterion(output, label) + 
                 aux_criterion(clf_output, real_classes_var)
@@ -315,7 +313,7 @@ if __name__ == '__main__':
             clf.zero_grad()
             label.data.fill_(real_label) # fake labels are real for generator cost
             output = netD(fake)
-            clf_output = clf(norm(fake))
+            clf_output = clf(fake_)
             errG = (
                 criterion(output, label) + 
                 aux_criterion(clf_output, real_classes_var)
