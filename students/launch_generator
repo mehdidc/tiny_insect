@@ -11,4 +11,4 @@ python --version
 nvcc --version
 dev=$(nvidia-smi |grep 0MiB -B1|awk '{print $2}'|head -n 1)
 echo $dev
-CUDA_VISIBLE_DEVICES=$dev codeopt compressor.py  --folder-prefix=opt
+CUDA_VISIBLE_DEVICES=$dev codeopt compressor.py  --folder-prefix=opt_gen --argv=generator
