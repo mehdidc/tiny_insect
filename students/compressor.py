@@ -229,8 +229,9 @@ def train(data_source='generator'):
     print(data_source)
     classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
     generator = '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth'
+    nb_passes = 10
     batchSize = 32 
-    nz=100 
+    nz = 100 
     nb_epochs = 200
     imageSize = 32
     nb_classes = 10
@@ -257,8 +258,8 @@ def train(data_source='generator'):
     clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
     clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
     
-    nbf = {{'nb_filters'|choice(32, 64, 96, 128, 192, 256, 512, 800)}}
-    fc = {{'fc'|choice(100, 200, 300, 400, 500, 600, 700, 800, 900, 1000)}}
+    nbf = {{'nb_filters'|choice(32, 64, 96, 128, 192, 256, 512, 600, 650, 700, 800)}}
+    fc = {{'fc'|choice(100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1500, 1800, 2000)}}
     S = ConvStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc=fc)
     S.apply(weights_init)
     S = S.cuda()
@@ -395,14 +396,15 @@ def train(data_source='generator'):
     last_reduced = 0
     valid_accs = []
     stats = defaultdict(list)
-    for epoch in range(nb_epochs):
+    for epoch in range(nb_epochs * nb_passes):
         print('Start epoch : {}'.format(epoch + 1))
+        ep = epoch % nb_epochs
         S.train(True)
-        for b, (X, y) in enumerate(dataloader_train.epoch(epoch)):
+        for b, (X, y) in enumerate(dataloader_train.epoch(ep)):
             t = time.time()
             input.data.resize_(X.size()).copy_(X)
             S.zero_grad()
-            idx = epoch * nb_train_examples + b * batchSize
+            idx = ep * nb_train_examples + b * batchSize
             y_true = yteacher_train[idx:idx + input.size(0)]
             y_true = Variable(y_true).cuda()
             y_pred = S(input)
@@ -443,12 +445,13 @@ def train(data_source='generator'):
         pd.DataFrame(valid_accs).to_csv('{{folder}}/valid.csv', index=False)
 
         print('valid acc : {}'.format(valid_acc))
-        if len(valid_accs) > 10 and (epoch - last_reduced) > 8:
-            up_to_last_10 = valid_accs[0:-10]
-            max_valid = max(up_to_last_10)
-            max_last_10 = max(valid_accs[-10:])
-            if max_valid >= max_last_10:
-                print('10 epochs without improvement : reduce lr')
+        nb_epochs_before_reduce = 10
+        if len(valid_accs) > nb_epochs_before_reduce and (epoch - last_reduced) > 8:
+            up_to_last = valid_accs[0:-nb_epochs_before_reduce]
+            max_valid = max(up_to_last)
+            max_last = max(valid_accs[-nb_epochs_before_reduce:])
+            if max_valid >= max_last:
+                print('{} epochs without improvement : reduce lr'.format(nb_epochs_before_reduce))
                 for param_group in optimizer.param_groups:
                     param_group['lr'] /= 2.
                 nb_reduce_lr += 1
