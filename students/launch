@@ -13,9 +13,10 @@ dev=$(nvidia-smi |grep 0MiB -B1|awk '{print $2}'|head -n 1)
 echo $dev
 echo $1
 if [ -z "$1" ]; then
-    ARGV="dataset"
+    SRC="dataset"
 else
-    ARGV=$1
+    SRC=$1
 fi
-PREFIX="opt_$ARGV"
+PREFIX="opt_$SRC"
+ARGV="--data-source=$SRC"
 CUDA_VISIBLE_DEVICES=$dev codeopt --folder-prefix=$PREFIX --argv=$ARGV --bayesopt --optim=maximize --verbose=1 compressor.py

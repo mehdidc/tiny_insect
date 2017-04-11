@@ -225,8 +225,7 @@ def get_acc(pred, true):
     _, true_classes = true.max(1)
     return (pred_classes == true_classes).float().mean()
 
-def train(data_source='generator'):
-    print(data_source)
+def train(*, data_source='generator'):
     classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
     generator = '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth'
     nb_passes = 10
@@ -462,4 +461,4 @@ def train(data_source='generator'):
     return max_valid_acc
 
 if __name__ == '__main__':
-    result = train(data_source=sys.argv[1])
+    result = run(train)
