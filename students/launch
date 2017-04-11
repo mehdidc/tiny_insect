@@ -2,7 +2,7 @@
 #SBATCH -N 1
 #SBATCH -n 8
 #SBATCH --gres=gpu:1
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 export THEANO_FLAGS="device=gpu"
 source ~/.myworkrc
 source activate py3
@@ -11,4 +11,11 @@ python --version
 nvcc --version
 dev=$(nvidia-smi |grep 0MiB -B1|awk '{print $2}'|head -n 1)
 echo $dev
-CUDA_VISIBLE_DEVICES=$dev codeopt compressor.py  --folder-prefix=opt_gen --argv=generator
+echo $1
+if [ -z "$1" ]; then
+    ARGV="dataset"
+else
+    ARGV=$1
+fi
+PREFIX="opt_$ARGV"
+CUDA_VISIBLE_DEVICES=$dev codeopt --folder-prefix=$PREFIX --argv=$ARGV --bayesopt --optim=maximize --verbose=1 compressor.py
