@@ -1,6 +1,9 @@
 from __future__ import print_function
 from collections import defaultdict
+import time
 import pandas as pd
+import warnings
+import math
 import sys
 import time
 from clize import run
@@ -28,6 +31,12 @@ sys.path.append('../generators')
 from loader import ImageFolder
 
 from PIL import Image
+
+import traceback
+
+from lightjob.cli import load_db
+from lightjob.db import AVAILABLE, PENDING, RUNNING, SUCCESS, ERROR
+
 
 class RandomHorizontalFlip(object):
     """Randomly horizontally flips the given PIL.Image with a probability of 0.5
@@ -135,14 +144,14 @@ class Gen(nn.Module):
         return x
 
 class MLPStudent(nn.Module):
-    def __init__(self, nc, w, h, no):
+    def __init__(self, nc, w, h, no, fc1=250, fc2=1000):
         super(MLPStudent, self).__init__()
         self.main = nn.Sequential(
-            nn.Linear(nc * w * h, 250),
-            nn.Linear(250, 1000),
-            nn.BatchNorm1d(1000),
+            nn.Linear(nc * w * h, fc1),
+            nn.Linear(fc1, fc2),
+            nn.BatchNorm1d(fc2),
             nn.ReLU(True),
-            nn.Linear(1000, no),
+            nn.Linear(fc2, no),
         )
 
     def forward(self, input):
@@ -171,6 +180,31 @@ class ConvStudent(nn.Module):
         x = x.view(x.size(0), -1)
         x = self.fc(x)
         return x
+
+
+class ConvFcStudent(nn.Module):
+    def __init__(self, nc, w, h, no, nbf=512, fc1=250, fc2=2000, sf=5):
+        super(ConvFcStudent, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(nc, nbf, sf),
+            nn.ReLU(True),
+            nn.MaxPool2d(2),
+        )
+        wout = (w - sf + 1) // 2
+        hout = (h - sf + 1) // 2
+        self.fc = nn.Sequential(
+            nn.Linear(wout * hout * nbf, fc1),
+            nn.Linear(fc1, fc2),
+            nn.ReLU(True),
+            nn.Linear(fc2, no)
+        )
+        
+    def forward(self, input):
+        x = self.features(input)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+
 
 class GeneratorLoader:
 
@@ -209,7 +243,6 @@ def norm(x, mean, std):
     return x
 
 def weights_init(m):
-    import math
     classname = m.__class__.__name__
     if classname.find('Conv2d') != -1:
         m.weight.data.normal_(0.0, 0.02)
@@ -225,7 +258,87 @@ def get_acc(pred, true):
     _, true_classes = true.max(1)
     return (pred_classes == true_classes).float().mean()
 
-def train(*, data_source='generator'):
+def insert(*, nb=1, where='dataset'):
+    db = load_db()
+    nb_inserted = 0
+    for _ in range(nb):
+        content = _sample()
+        print(content)
+        nb_inserted += db.safe_add_job(content, model=content['model'], where=where)
+    print('Inserted {} row(s) in the db'.format(nb_inserted))
+
+def _sample():
+    model = 'convfc'
+    rng = random
+    if model == 'convfc':
+        sf = rng.choice((3, 5))
+        nbf = rng.choice((32, 64, 96, 128, 192, 256, 512, 600, 650, 700, 800))
+        fc1 = rng.choice((50, 100, 200, 300, 400, 500))
+        fc2 = rng.choice((500, 600, 700, 800, 900, 1000, 1200, 1400, 1500, 1800, 2000, 2200, 2300, 2500, 3000))
+        hypers = {
+            'nbf': nbf,
+            'sf': sf,
+            'fc1': fc1,
+            'fc2': fc2,
+        }
+    else:
+        raise ValueError(model)
+    algo = rng.choice(('adam', 'nesterov', 'sgd'))
+    momentum = rng.uniform(0.5, 0.95) if algo == 'nesterov' else None
+    lr = _loguniform(rng, -5, -2)
+    params = {
+        'model': model,
+        'hypers': hypers,
+        'algo': algo,
+        'lr': lr,
+        'algo': algo,
+        'momentum': momentum,
+    }
+    return params
+
+
+def _loguniform(rng, low=0, high=1, base=10):
+    return base ** rng.uniform(low, high)
+
+def train(id, *, budget_secs=3600. * 6):
+    job_summary = id
+    db = load_db()
+    job = db.get_job_by_summary(id)
+    params = job['content']
+    state = job['state']
+    
+    if state != AVAILABLE:
+        warnings.warn('Job with id "{}" has a state : "{}", expecting it to be : "{}".Skip.'.format(job_summary, state, AVAILABLE))
+        return
+
+    db.modify_state_of(job_summary, RUNNING)
+    params['folder'] = _get_outdir(job_summary)
+    params['data_source'] = job['where']
+    params['budget_secs'] = budget_secs
+    try:
+        result = _train_model(params)
+    except Exception as ex:
+        traceback = _get_traceback() 
+        warnings.warn('Job with id "{}" raised an exception : {}. Putting state to "error" and saving traceback.'.format(job_summary, ex))
+        db.job_update(job_summary, {'traceback': traceback})
+        db.modify_state_of(job_summary, ERROR)
+    else:
+        db.modify_state_of(job_summary, SUCCESS)
+        db.job_update(job_summary, {'stats': result})
+        print('Job {} succesfully trained !'.format(job_summary))
+
+
+def _get_traceback():
+    lines  = traceback.format_exc().splitlines()
+    lines = '\n'.join(lines)
+    return lines
+
+
+def _get_outdir(job_summary):
+    return 'jobs/{}'.format(job_summary)
+
+
+def _train_model(params):
     classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
     generator = '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth'
     nb_passes = 10
@@ -234,32 +347,43 @@ def train(*, data_source='generator'):
     nb_epochs = 200
     imageSize = 32
     nb_classes = 10
-    dataroot='/home/mcherti/work/data/cifar10'
+    nb_epochs_before_reduce = 10
+    max_times_reduce_lr = 12
+    gamma = 0.5
+    reduce_wait = 8
+    dataroot = '/home/mcherti/work/data/cifar10'
+    data_source = params['data_source']
+    
+    hypers = params['hypers']
+    nbf = hypers['nbf']
+    fc1 = hypers['fc1']
+    fc2 = hypers['fc2']
+    algo = params['algo']
+    lr = params['lr']
+    momentum = params['momentum']
+
+    budget_secs = float(params['budget_secs'])
+    t0 = time.time()
+
+    folder = params['folder']
+    if not os.path.exists(folder):
+        os.makedirs(folder)
 
     torch.manual_seed(42)
     random.seed(42)
     np.random.seed(42)
 
-    if not os.path.exists('{{folder}}'):
-        os.mkdir('{{folder}}')
-
     sys.path.append(os.path.dirname(classifier))
     sys.path.append(os.path.dirname(classifier) + '/..')
     clf = torch.load(classifier)
         
-    if 'cifar10' in dataroot:
-        mean = [0.49139968, 0.48215827, 0.44653124]
-        std = [0.24703233, 0.24348505, 0.26158768]
-    else:
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
+    mean = [0.49139968, 0.48215827, 0.44653124]
+    std = [0.24703233, 0.24348505, 0.26158768]
     
     clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
     clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
-    
-    nbf = {{'nb_filters'|choice(32, 64, 96, 128, 192, 256, 512, 600, 650, 700, 800)}}
-    fc = {{'fc'|choice(100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1500, 1800, 2000)}}
-    S = ConvStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc=fc)
+
+    S = ConvFcStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc1=fc1, fc2=fc2)
     S.apply(weights_init)
     S = S.cuda()
     
@@ -267,42 +391,32 @@ def train(*, data_source='generator'):
     input = Variable(input)
     input = input.cuda()
 
-    algo = {{'algo'|choice(0, 1, 2)}}
-    lr = {{'lr'|loguniform(-5, -2)}}
-    if algo == 0:
+    if algo == 'adam':
         optimizer = torch.optim.Adam(S.parameters(), lr=lr)
-    elif algo == 1:
-        optimizer = torch.optim.SGD(S.parameters(), lr=lr, nesterov=True, momentum=0.9)
-    elif algo == 2:
+    elif algo == 'nesterov':
+        optimizer = torch.optim.SGD(S.parameters(), lr=lr, nesterov=True, momentum=momentum)
+    elif algo == 'sgd':
         optimizer = torch.optim.SGD(S.parameters(), lr=lr)
+
     avg_loss = 0.
     avg_acc = 0.
     
-    if 'cifar10' in dataroot:
-        transform = transforms.Compose([
-            transforms.Scale(imageSize),
-            transforms.CenterCrop(imageSize),
-            Rotation(-10, 10),
-            RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ])
-        transform_valid = transforms.Compose([
-            transforms.Scale(imageSize),
-            transforms.CenterCrop(imageSize),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ])
-        dataset = dset.CIFAR10(root=dataroot, download=True, transform=transform)
-        dataset_valid = dset.CIFAR10(root=dataroot, download=True, transform=transform_valid)
-    else:
-        transform = transforms.Compose([
-               transforms.Scale(imageSize),
-               transforms.CenterCrop(imageSize),
-               transforms.ToTensor(),
-               transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-        ])
-        dataset = ImageFolder(root=dataroot, transform=transform)
+    transform = transforms.Compose([
+        transforms.Scale(imageSize),
+        transforms.CenterCrop(imageSize),
+        Rotation(-10, 10),
+        RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    ])
+    transform_valid = transforms.Compose([
+        transforms.Scale(imageSize),
+        transforms.CenterCrop(imageSize),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    ])
+    dataset = dset.CIFAR10(root=dataroot, download=True, transform=transform)
+    dataset_valid = dset.CIFAR10(root=dataroot, download=True, transform=transform_valid)
     
     if data_source == 'dataset':
         predictions_filename = 'yteacher_train.th'
@@ -336,7 +450,7 @@ def train(*, data_source='generator'):
         onehot = Variable(onehot)
         onehot = onehot.cuda()
 
-        u = torch.zeros(batchSize, nz, 1, 1)
+        u = torch.zeros(batchSize, nb_classes, 1, 1)
         u = u.cuda()
 
         perm = np.arange(len(dataset))
@@ -344,8 +458,6 @@ def train(*, data_source='generator'):
         perm = torch.from_numpy(perm)
         perm_train = perm[0:40000]
         perm_valid = perm[40000:]
-        #perm_train = perm_train[0:64]
-        #perm_valid = perm_valid[0:64]
         nb_valid_examples = len(perm_valid)
         nb_minibatches = len(perm_train) // batchSize
         nb_train_examples = nb_minibatches * batchSize
@@ -373,11 +485,27 @@ def train(*, data_source='generator'):
             imsave('sample.png', img)
             """
             input.data.resize_(X.size()).copy_(X)
-            y_true = clf(norm(input, clf_mean, clf_std))
+            y_true = clf(norm(input, clf_mean, clf_std))     
             yteacher_train[b * batchSize:b * batchSize + input.size(0)].copy_(y_true.data)
         torch.save(yteacher_train, predictions_filename)
     else:
         yteacher_train = torch.load(predictions_filename)
+ 
+    """
+    # Check the accuracy of the teacher on the generated data
+    # good if high
+    accs = []
+    for X, y in dataloader_train:
+        input.data.resize_(X.size()).copy_(X)
+        y = y.view(-1, 1).cpu()
+        y_true = torch.zeros(y.size(0), nb_classes)
+        y_true.scatter_(1, y, 1)
+        y_pred = clf(norm(input, clf_mean, clf_std)).data.cpu()
+        acc = get_acc(y_true, y_pred)
+        accs.append(acc)
+        print(np.mean(accs))
+    """
+
     """
     # check if repassing through dataloader_train is determenistic
     # (uncomment to execute)
@@ -420,9 +548,9 @@ def train(*, data_source='generator'):
             if b % 100 == 0:
                 print('[{}/{}] batch {}/{}. moving_loss:{:.3f} moving_acc:{:.3f}, time : {:.3f}'.format(epoch, nb_epochs, b, batches_per_epoch, avg_loss, avg_acc, dt))
             nb_updates += 1
+
         S.train(False)
         accs = []
-
         for b, (X, y) in enumerate(dataloader_valid):
             input.data.resize_(X.size()).copy_(X)
             y_true = torch.zeros(y.size(0), nb_classes)
@@ -435,30 +563,38 @@ def train(*, data_source='generator'):
         if valid_acc > max_valid_acc:
             print('improvement of validation acc : from {:.3f} to {:.3f}'.format(max_valid_acc, valid_acc))
             max_valid_acc = valid_acc
-            filename = '{{folder}}//student.th'
+            filename = '{}/student.th'.format(folder)
             print('saving model to : {}'.format(filename))
-            torch.save(S.state_dict(), filename)
+            torch.save(S, filename)
         valid_accs.append(valid_acc)
 
-        pd.DataFrame(stats).to_csv('{{folder}}/stats.csv', index=False)
-        pd.DataFrame(valid_accs).to_csv('{{folder}}/valid.csv', index=False)
+        pd.DataFrame(stats).to_csv('{}/stats.csv'.format(folder), index=False)
+        pd.DataFrame(valid_accs).to_csv('{}/valid.csv'.format(folder), index=False)
 
         print('valid acc : {}'.format(valid_acc))
-        nb_epochs_before_reduce = 10
-        if len(valid_accs) > nb_epochs_before_reduce and (epoch - last_reduced) > 8:
+
+        dt = time.time() - t0
+        if dt > budget_secs:
+            print('Budget finished. Quit')
+            break
+
+        if len(valid_accs) > nb_epochs_before_reduce and (epoch - last_reduced) > reduce_wait:
             up_to_last = valid_accs[0:-nb_epochs_before_reduce]
             max_valid = max(up_to_last)
             max_last = max(valid_accs[-nb_epochs_before_reduce:])
             if max_valid >= max_last:
                 print('{} epochs without improvement : reduce lr'.format(nb_epochs_before_reduce))
                 for param_group in optimizer.param_groups:
-                    param_group['lr'] /= 2.
+                    param_group['lr'] *= gamma
                 nb_reduce_lr += 1
                 last_reduced = epoch
-                if nb_reduce_lr == 12:
-                    print('reducing lr more 12 times, quit.')
+                if nb_reduce_lr == max_times_reduce_lr:
+                    print('reduced lr {} times, quit.'.format(max_times_reduce_lr))
                     break
-    return max_valid_acc
+    result = {
+            'valid_acc': valid_accs
+    }
+    return result
 
 if __name__ == '__main__':
-    result = run(train)
+    result = run(train, insert)

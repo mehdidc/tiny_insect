@@ -1,0 +1,9 @@
+#!/bin/sh
+NB=10
+TIME=360
+for v in $(lightjob show --state=available|head -n $NB); do
+    echo $v
+    OUTPUT="jobs/$v/output"
+    mkdir -p "jobs/$v"
+    sbatch --output=$OUTPUT --error=$OUTPUT train_script $v
+done

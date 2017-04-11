@@ -19,7 +19,8 @@ import torchvision.transforms as transforms
 import torchvision.utils as vutils
 from torch.autograd import Variable
 
-
+sys.path.append('../students')
+from compressor import SamplerFromIndices
 from loader import ImageFolder
 
 
@@ -79,6 +80,7 @@ if __name__ == '__main__':
                             ]))
     elif opt.dataset == 'cifar10':
         dataset = dset.CIFAR10(root=opt.dataroot, download=True,
+                               train=True,
                                transform=transforms.Compose([
                                    transforms.Scale(opt.imageSize),
                                    transforms.ToTensor(),
@@ -86,10 +88,22 @@ if __name__ == '__main__':
                                ])
         )
     assert dataset
+    #dataloader = torch.utils.data.DataLoader(
+    #    dataset, batch_size=opt.batchSize,
+    #    shuffle=True, 
+    #    num_workers=int(opt.workers))
+    np.random.seed(42)
+    perm = np.arange(len(dataset))
+    np.random.shuffle(perm)
+    perm = torch.from_numpy(perm)
+    perm_train = perm[0:40000]
+    perm_valid = perm[40000:]
+    nb_train_examples = len(perm_train)
+    nb_valid_examples = len(perm_valid)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=opt.batchSize,
-        shuffle=True, 
-        num_workers=int(opt.workers))
+        sampler=SamplerFromIndices(dataset, perm_train),
+        num_workers=8)
 
     ngpu = int(opt.ngpu)
     nz = int(opt.nz)
@@ -196,7 +210,7 @@ if __name__ == '__main__':
         noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
 
     sys.path.append('/home/mcherti/work/code/external/densenet.pytorch')
-    clf = torch.load('/home/mcherti/work/code/external/densenet.pytorch/model/latest.pth')
+    clf = torch.load('/home/mcherti/work/code/external/densenet.pytorch/model/model.th')
     clf = clf.cuda()
 
     if 'cifar10' in opt.dataroot:
@@ -226,6 +240,7 @@ if __name__ == '__main__':
     optimizerD = optim.Adam(netD.parameters(), lr = opt.lr, betas = (opt.beta1, 0.999))
     optimizerG = optim.Adam(netG.parameters(), lr = opt.lr, betas = (opt.beta1, 0.999))
     optimizerC = optim.SGD(clf.parameters(), lr=1e-4)
+ 
 
     for epoch in range(opt.niter):
         for i, data in enumerate(dataloader):
