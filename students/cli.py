@@ -282,7 +282,13 @@ def _get_outdir(job_summary):
 
 def _train_model(params):
     classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
-    generator = '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth'
+    generators = {
+        'aux1': '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth',
+        'aux2': '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth'
+    }
+    gen = 'aux2'
+    generator =  generators[gen]
+
     nb_passes = 10
     batchSize = 32 
     nz = 100 
@@ -362,7 +368,7 @@ def _train_model(params):
     dataset_valid = dset.CIFAR10(root=dataroot, download=True, transform=transform_valid)
     
     if data_source == 'dataset':
-        predictions_filename = 'yteacher_train.th'
+        predictions_filename = 'predictions/dataset.th'
         perm = np.arange(len(dataset))
         np.random.shuffle(perm)
         perm = torch.from_numpy(perm)
@@ -379,8 +385,7 @@ def _train_model(params):
             sampler=SamplerFromIndices(dataset, perm_valid),
             num_workers=8)
     elif data_source == 'generator':
-        predictions_filename = 'yteacher_train_generator.th'
-
+        predictions_filename = 'predictions/{}.th'.format(gen)
         G = Gen(imageSize=imageSize, nb_classes=nb_classes)
         G.load_state_dict(torch.load(generator))
         G = G.cuda()
