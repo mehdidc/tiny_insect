@@ -233,7 +233,7 @@ def _sample():
         'algo': algo,
         'momentum': momentum,
     }
-    params['data_source'] = 'generator'
+    params['data_source'] = 'aux2'
     return params
 
 
@@ -259,6 +259,7 @@ def train(id, *, budget_secs=3600. * 6, test=False):
         result = _train_model(params)
     except Exception as ex:
         traceback = _get_traceback() 
+        print(traceback)
         warnings.warn('Job with id "{}" raised an exception : {}. Putting state to "error" and saving traceback.'.format(job_summary, ex))
         if not test:
             db.job_update(job_summary, {'traceback': traceback})
@@ -286,9 +287,6 @@ def _train_model(params):
         'aux1': '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth',
         'aux2': '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth'
     }
-    gen = 'aux2'
-    generator =  generators[gen]
-
     nb_passes = 10
     batchSize = 32 
     nz = 100 
@@ -301,6 +299,8 @@ def _train_model(params):
     reduce_wait = 8
     dataroot = '/home/mcherti/work/data/cifar10'
     data_source = params['data_source']
+    generator = generators.get(data_source)
+
     print('data source : {}'.format(data_source))
     
     hypers = params['hypers']
@@ -384,8 +384,8 @@ def _train_model(params):
             dataset_valid, batch_size=batchSize,
             sampler=SamplerFromIndices(dataset, perm_valid),
             num_workers=8)
-    elif data_source == 'generator':
-        predictions_filename = 'predictions/{}.th'.format(gen)
+    else:
+        predictions_filename = 'predictions/{}.th'.format(data_source)
         G = Gen(imageSize=imageSize, nb_classes=nb_classes)
         G.load_state_dict(torch.load(generator))
         G = G.cuda()
@@ -414,8 +414,6 @@ def _train_model(params):
             dataset_valid, batch_size=batchSize,
             sampler=SamplerFromIndices(dataset, perm_valid),
             num_workers=8)
-    else:
-        raise ValueError('Unknown data_source : {}'.format(data_source))
 
     dataloader_train = DataAugmentationLoader(dataloader_train, nb_epochs=nb_epochs)
     batches_per_epoch = nb_train_examples // batchSize
@@ -438,7 +436,12 @@ def _train_model(params):
         torch.save(yteacher_train, predictions_filename)
     else:
         yteacher_train = torch.load(predictions_filename)
- 
+        #check if predictions save are correect
+        for b, (X, y) in enumerate(dataloader_train):
+            input.data.resize_(X.size()).copy_(X)
+            ypred = clf(norm(input, clf_mean, clf_std)).data.cpu()
+            ytrue = yteacher_train[b * batchSize:b * batchSize + input.size(0)]
+            assert (torch.abs(ytrue - ypred) > 1e-3).sum() == 0
     """
     # Check the accuracy of the teacher on the generated data
     # good if high
