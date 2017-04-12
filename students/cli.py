@@ -1,23 +1,23 @@
-from __future__ import print_function
-from collections import defaultdict
+import math
 import time
-import pandas as pd
 import warnings
 import math
 import sys
 import time
-from clize import run
-from itertools import chain
-import numpy as np
-import sys
-from skimage.io import imsave
-import argparse
 import os
 import random
+import traceback
+from collections import defaultdict
+from clize import run
+
+import numpy as np
+import pandas as pd
+from skimage.io import imsave
+from PIL import Image
+
 import torch
 import torch.nn as nn
 import random
-import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
 import torch.utils.data
@@ -27,69 +27,21 @@ import torchvision.utils as vutils
 from torch.utils.data.sampler import Sampler
 from torch.autograd import Variable
 from torch.nn.init import xavier_uniform
-sys.path.append('../generators')
-from loader import ImageFolder
-
-from PIL import Image
-
-import traceback
 
 from lightjob.cli import load_db
 from lightjob.db import AVAILABLE, PENDING, RUNNING, SUCCESS, ERROR
 
+from data import RandomHorizontalFlip
+from data import Rotation
+from data import HSV
+from data import RandomSizedCrop
+from data import hsv_augmentation
+from data import SamplerFromIndices
+from data import DataAugmentationLoader
+from data import GeneratorLoader
+from data import norm
 
-class RandomHorizontalFlip(object):
-    """Randomly horizontally flips the given PIL.Image with a probability of 0.5
-    """
-
-    def __call__(self, img):
-        if np.random.random() < 0.5:
-            return img.transpose(Image.FLIP_LEFT_RIGHT)
-        return img
-
-class Rotation:
-
-    def __init__(self, min_val, max_val):
-        self.min_val = min_val
-        self.max_val = max_val
-
-    def __call__(self, img):
-        angle = np.random.uniform(low=self.min_val, high=self.max_val)
-        return img.rotate(angle)
-
-
-class SamplerFromIndices(Sampler):
-
-    def __init__(self, data_source, indices):
-        self.num_samples = len(data_source)
-        self.perm = torch.LongTensor(indices)
-
-    def __iter__(self):
-        return iter(self.perm)
-
-    def __len__(self):
-        return len(self.perm)
-
-
-class LoaderDataAugmentation:
-
-    def __init__(self, dataloader, nb_epochs=1):
-        self.dataloader = dataloader
-        self.nb_epochs = nb_epochs
-
-    def __iter__(self):
-        for i in range(self.nb_epochs):
-            yield from self.epoch(i)
-    
-    def epoch(self, i):
-        random.seed(i)
-        torch.manual_seed(i)
-        torch.cuda.manual_seed(i)
-        np.random.seed(i)
-        yield from self.dataloader
-
-    def __len__(self):
-        return len(self.dataloader) * self.nb_epochs
+sys.path.append('../generators')
 
 class Gen(nn.Module):
     def __init__(self, imageSize=32, nz=100, nb_classes=18, nc=3, ngf=64):
@@ -205,43 +157,6 @@ class ConvFcStudent(nn.Module):
         x = self.fc(x)
         return x
 
-
-class GeneratorLoader:
-
-    def __init__(self, G, z, onehot, u, nb_minibatches):
-        self.G = G
-        self.z = z
-        self.onehot = onehot
-        self.u = u
-        self.nb_minibatches = nb_minibatches
-
-    def __iter__(self):
-        G = self.G
-        z = self.z
-        onehot = self.onehot
-        u = self.u
-        nb_minibatches = self.nb_minibatches
-        for i in range(nb_minibatches):
-            z.data.normal_()
-            onehot.data.zero_()
-            u.uniform_()
-            classes = u.max(1)[1]
-            onehot.data.scatter_(1, classes, 1)
-            g_input = torch.cat((z, onehot), 1)
-            out = G(g_input)
-            input = out.data
-            yield input, classes
-    
-    def __len__(self):
-        return self.nb_minibatches
-
-def norm(x, mean, std):
-    x = x + 1
-    x = x / 2
-    x = x - mean.repeat(x.size(0), 1, x.size(2), x.size(3))
-    x = x / std.repeat(x.size(0), 1, x.size(2), x.size(3))
-    return x
-
 def weights_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv2d') != -1:
@@ -258,13 +173,13 @@ def get_acc(pred, true):
     _, true_classes = true.max(1)
     return (pred_classes == true_classes).float().mean()
 
-def insert(*, nb=1, where='dataset'):
+def insert(*, nb=1):
     db = load_db()
     nb_inserted = 0
     for _ in range(nb):
         content = _sample()
         print(content)
-        nb_inserted += db.safe_add_job(content, model=content['model'], where=where)
+        nb_inserted += db.safe_add_job(content, model=content['model'])
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
 
@@ -318,37 +233,40 @@ def _sample():
         'algo': algo,
         'momentum': momentum,
     }
+    params['data_source'] = 'generator'
     return params
 
 
 def _loguniform(rng, low=0, high=1, base=10):
     return base ** rng.uniform(low, high)
 
-def train(id, *, budget_secs=3600. * 6):
+
+def train(id, *, budget_secs=3600. * 6, test=False):
     job_summary = id
     db = load_db()
     job = db.get_job_by_summary(id)
     params = job['content']
     state = job['state']
     
-    if state != AVAILABLE:
-        warnings.warn('Job with id "{}" has a state : "{}", expecting it to be : "{}".Skip.'.format(job_summary, state, AVAILABLE))
-        return
-
-    db.modify_state_of(job_summary, RUNNING)
+    if not test:
+        if state != AVAILABLE:
+            warnings.warn('Job with id "{}" has a state : "{}", expecting it to be : "{}".Skip.'.format(job_summary, state, AVAILABLE))
+            return
+        db.modify_state_of(job_summary, RUNNING)
     params['folder'] = _get_outdir(job_summary)
-    params['data_source'] = job['where']
     params['budget_secs'] = budget_secs
     try:
         result = _train_model(params)
     except Exception as ex:
         traceback = _get_traceback() 
         warnings.warn('Job with id "{}" raised an exception : {}. Putting state to "error" and saving traceback.'.format(job_summary, ex))
-        db.job_update(job_summary, {'traceback': traceback})
-        db.modify_state_of(job_summary, ERROR)
+        if not test:
+            db.job_update(job_summary, {'traceback': traceback})
+            db.modify_state_of(job_summary, ERROR)
     else:
-        db.modify_state_of(job_summary, SUCCESS)
-        db.job_update(job_summary, {'stats': result})
+        if not test:
+            db.modify_state_of(job_summary, SUCCESS)
+            db.job_update(job_summary, {'stats': result})
         print('Job {} succesfully trained !'.format(job_summary))
 
 
@@ -377,6 +295,7 @@ def _train_model(params):
     reduce_wait = 8
     dataroot = '/home/mcherti/work/data/cifar10'
     data_source = params['data_source']
+    print('data source : {}'.format(data_source))
     
     hypers = params['hypers']
     nbf = hypers['nbf']
@@ -426,19 +345,19 @@ def _train_model(params):
     avg_acc = 0.
     
     transform = transforms.Compose([
-        transforms.Scale(imageSize),
-        transforms.CenterCrop(imageSize),
-        Rotation(-10, 10),
+        HSV(0.06, 0.26, 0.2, 0.21, 0.13),
         RandomHorizontalFlip(),
+        RandomSizedCrop(24),
+        transforms.Scale(32, interpolation=3),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
+
     transform_valid = transforms.Compose([
-        transforms.Scale(imageSize),
-        transforms.CenterCrop(imageSize),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
+
     dataset = dset.CIFAR10(root=dataroot, download=True, transform=transform)
     dataset_valid = dset.CIFAR10(root=dataroot, download=True, transform=transform_valid)
     
@@ -493,7 +412,7 @@ def _train_model(params):
     else:
         raise ValueError('Unknown data_source : {}'.format(data_source))
 
-    dataloader_train = LoaderDataAugmentation(dataloader_train, nb_epochs=nb_epochs)
+    dataloader_train = DataAugmentationLoader(dataloader_train, nb_epochs=nb_epochs)
     batches_per_epoch = nb_train_examples // batchSize
     if not os.path.exists(predictions_filename):
         yteacher_train = torch.zeros(len(dataloader_train) * batchSize, nb_classes)
@@ -564,6 +483,10 @@ def _train_model(params):
             optimizer.step()
             dt = time.time() - t
             acc = get_acc(y_true, y_pred)
+            if np.isnan(loss.data[0]):
+                raise ValueError('Nan detected')
+            if np.isinf(loss.data[0]):
+                raise ValueError('Inf detected')
             stats['acc'].append(acc.data[0])
             stats['loss'].append(loss.data[0])
             stats['time'].append(dt)
@@ -616,7 +539,7 @@ def _train_model(params):
                     print('reduced lr {} times, quit.'.format(max_times_reduce_lr))
                     break
     result = {
-            'valid_acc': valid_accs
+        'valid_acc': valid_accs
     }
     return result
 
