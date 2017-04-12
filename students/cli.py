@@ -267,6 +267,30 @@ def insert(*, nb=1, where='dataset'):
         nb_inserted += db.safe_add_job(content, model=content['model'], where=where)
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
+
+def clean():
+    db = load_db()
+    # remove student.th form jobs with ERROR state
+    jobs = db.jobs_with(state=ERROR)
+    for job in jobs:
+        folder = os.path.join('jobs', job['summary'])
+        f = os.path.join(folder, 'student.th')
+        if os.path.exists(f):
+            os.remove(f)
+            print(f)
+    # remove job folders that do not exist in the DB
+    jobs = db.all_jobs()
+    summaries = set(j['summary'] for j in jobs)
+    for dirname in os.listdir('jobs'):
+        path = os.path.join('jobs', dirname)
+        if dirname not in summaries and os.path.exists(path):
+            print(path)
+            try:
+                rmtree(path)
+            except OSError as ex:
+                print(ex)
+
+
 def _sample():
     model = 'convfc'
     rng = random
@@ -597,4 +621,4 @@ def _train_model(params):
     return result
 
 if __name__ == '__main__':
-    result = run(train, insert)
+    result = run(train, insert, clean)
