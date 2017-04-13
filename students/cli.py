@@ -8,6 +8,7 @@ import os
 import random
 import traceback
 from collections import defaultdict
+from functools import partial
 from clize import run
 
 import numpy as np
@@ -185,7 +186,7 @@ def insert(*, nb=1, data_source=None):
         nb_inserted += db.safe_add_job(content, model=content['model'])
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
-def insert_bayesopt(*, nb=1):
+def insert_bayesopt(*, nb=1, data_source=None):
     from fluentopt.bandit import Bandit
     from fluentopt.bandit import ucb_maximize
     from fluentopt.transformers import Wrapper
@@ -193,37 +194,48 @@ def insert_bayesopt(*, nb=1):
     from lightjob.db import SUCCESS
     from sklearn.ensemble import RandomForestRegressor
     import pandas as pd
-    db = load_db()
+    def _sample_from(rng):
+        d = _sample(rng)
+        if data_source:
+            d['data_source'] = data_source
+        return d
     reg = RandomForestRegressorWithUncertainty(
         n_estimators=100, 
         min_samples_leaf=5,
         oob_score=True)
     opt = Bandit(
-        sampler=_sample, 
+        sampler=_sample_from, 
         score=ucb_maximize, 
         model=Wrapper(reg, transform_X=_transform),
         nb_suggestions=1000
     )
+    db = load_db()
     jobs = db.jobs_with_state(SUCCESS)
     jobs = list(jobs)
+    if data_source:
+        jobs = [j for j in jobs if j['content']['data_source'] == data_source]
     X = [j['content'] for j in jobs]
     y = [np.min(j['stats']['valid_acc']) for j in jobs]
+    print(len(X))
     opt.update_many(X, y)
-    print(opt.suggest())
+    for _ in range(nb):
+        content = opt.suggest()
+        print(content)
+        #nb_inserted += db.safe_add_job(content, model=content['model'])
+    print('Inserted {} row(s) in the db'.format(nb_inserted))
+
 
 def _transform(dlist):
-    from fluentopt.utils import flatten_dict
-    from fluentopt.utils import dict_vectorizer
-    import pandas as pd
-    dlist = [flatten_dict(d) for d in dlist]
-    colnames = set([k for d in dlist for k in d.keys()])
-    colnames = list(colnames)
-    colnames = sorted(colnames)  # sort cols in alphabetical order
-    df = pd.DataFrame(dlist)
-    df = pd.get_dummies(df)
-    df = df.fillna(-1)
-    arr = df.values
-    return arr
+    import copy
+    from fluentopt.transformers import vectorize
+    dlist = copy.deepcopy(dlist)
+    for d in dlist:
+        d['algo'] = {'adam': 0, 'nesterov': 1, 'sgd': 2}[d['algo']]
+        d['data_source'] = {'aux1' : 0, 'aux2': 1, 'dataset': 2, 'dataset_old': 3}[d['data_source']]
+        d['momentum'] = d['momentum'] if d['momentum'] else -1
+        d['model'] = {'convfc': 0}[d['model']]
+    return vectorize(dlist)
+
 
 def clean():
     db = load_db()
@@ -246,16 +258,26 @@ def clean():
                 rmtree(path)
             except OSError as ex:
                 print(ex)
-
+    jobs = db.jobs_with(state=RUNNING)
+    for job in jobs:
+        dirname = job['summary']
+        output = os.path.join('jobs', dirname, 'output')
+        if not os.path.exists(output):
+            continue
+        with open(output, 'r') as fd:
+            s = fd.read()
+        has_error = "all CUDA-capable devices are busy or unavailable" in s
+        if has_error:
+           db.modify_state_of(job['summary'], AVAILABLE)
 
 def _sample(rng):
     model = 'convfc'
     rng = random
     if model == 'convfc':
         sf = rng.choice((3, 5))
-        nbf = rng.choice((32, 64, 96, 128, 192, 256, 512, 600, 650, 700, 800))
-        fc1 = rng.choice((50, 100, 200, 300, 400, 500))
-        fc2 = rng.choice((500, 600, 700, 800, 900, 1000, 1200, 1400, 1500, 1800, 2000, 2200, 2300, 2500, 3000))
+        nbf = rng.choice((32, 64, 96, 128, 192, 256, 512, 600, 650, 700, 800, 900, 1000))
+        fc1 = rng.randint(1, 10) * 100
+        fc2 = rng.randint(1, 100) * 100
         hypers = {
             'nbf': nbf,
             'sf': sf,
