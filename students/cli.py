@@ -176,12 +176,52 @@ def get_acc(pred, true):
 def insert(*, nb=1):
     db = load_db()
     nb_inserted = 0
+    rng = random
     for _ in range(nb):
-        content = _sample()
+        content = _sample(rng)
         print(content)
         nb_inserted += db.safe_add_job(content, model=content['model'])
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
+def insert_bayesopt(*, nb=1):
+    from fluentopt.bandit import Bandit
+    from fluentopt.bandit import ucb_maximize
+    from fluentopt.transformers import Wrapper
+    from fluentopt.utils import RandomForestRegressorWithUncertainty
+    from lightjob.db import SUCCESS
+    from sklearn.ensemble import RandomForestRegressor
+    import pandas as pd
+    db = load_db()
+    reg = RandomForestRegressorWithUncertainty(
+        n_estimators=100, 
+        min_samples_leaf=5,
+        oob_score=True)
+    opt = Bandit(
+        sampler=_sample, 
+        score=ucb_maximize, 
+        model=Wrapper(reg, transform_X=_transform),
+        nb_suggestions=1000
+    )
+    jobs = db.jobs_with_state(SUCCESS)
+    jobs = list(jobs)
+    X = [j['content'] for j in jobs]
+    y = [np.min(j['stats']['valid_acc']) for j in jobs]
+    opt.update_many(X, y)
+    print(opt.suggest())
+
+def _transform(dlist):
+    from fluentopt.utils import flatten_dict
+    from fluentopt.utils import dict_vectorizer
+    import pandas as pd
+    dlist = [flatten_dict(d) for d in dlist]
+    colnames = set([k for d in dlist for k in d.keys()])
+    colnames = list(colnames)
+    colnames = sorted(colnames)  # sort cols in alphabetical order
+    df = pd.DataFrame(dlist)
+    df = pd.get_dummies(df)
+    df = df.fillna(-1)
+    arr = df.values
+    return arr
 
 def clean():
     db = load_db()
@@ -206,7 +246,7 @@ def clean():
                 print(ex)
 
 
-def _sample():
+def _sample(rng):
     model = 'convfc'
     rng = random
     if model == 'convfc':
@@ -437,11 +477,13 @@ def _train_model(params):
     else:
         yteacher_train = torch.load(predictions_filename)
         #check if predictions save are correect
+        """
         for b, (X, y) in enumerate(dataloader_train):
             input.data.resize_(X.size()).copy_(X)
             ypred = clf(norm(input, clf_mean, clf_std)).data.cpu()
             ytrue = yteacher_train[b * batchSize:b * batchSize + input.size(0)]
             assert (torch.abs(ytrue - ypred) > 1e-3).sum() == 0
+        """
     """
     # Check the accuracy of the teacher on the generated data
     # good if high
@@ -552,4 +594,4 @@ def _train_model(params):
     return result
 
 if __name__ == '__main__':
-    result = run(train, insert, clean)
+    result = run(train, insert, clean, insert_bayesopt)
