@@ -173,13 +173,15 @@ def get_acc(pred, true):
     _, true_classes = true.max(1)
     return (pred_classes == true_classes).float().mean()
 
-def insert(*, nb=1):
+def insert(*, nb=1, data_source=None):
     db = load_db()
     nb_inserted = 0
     rng = random
     for _ in range(nb):
         content = _sample(rng)
-        print(content)
+        if data_source:
+            content['data_source'] = data_source
+        print(content, content['data_source'])
         nb_inserted += db.safe_add_job(content, model=content['model'])
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
@@ -273,7 +275,7 @@ def _sample(rng):
         'algo': algo,
         'momentum': momentum,
     }
-    params['data_source'] = 'aux2'
+    params['data_source'] = rng.choice(('dataset', 'aux2'))
     return params
 
 
@@ -407,8 +409,8 @@ def _train_model(params):
     dataset = dset.CIFAR10(root=dataroot, download=True, transform=transform)
     dataset_valid = dset.CIFAR10(root=dataroot, download=True, transform=transform_valid)
     
-    if data_source == 'dataset':
-        predictions_filename = 'predictions/dataset.th'
+    if data_source in ('dataset', 'dataset_old'):
+        predictions_filename = 'predictions/{}.th'.format(data_source)
         perm = np.arange(len(dataset))
         np.random.shuffle(perm)
         perm = torch.from_numpy(perm)
