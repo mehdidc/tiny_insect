@@ -8,6 +8,7 @@ import os
 import random
 import traceback
 from collections import defaultdict
+from itertools import chain
 from functools import partial
 from clize import run
 
@@ -277,7 +278,7 @@ def clean():
                 print(ex)
     # make jobs that stopped abruptly without chaning state to ERROR
     # to AVAILABLE again
-    jobs = db.jobs_with(state=RUNNING)
+    jobs = chain(db.jobs_with(state=RUNNING) , db.jobs_with(state=ERROR))
     for job in jobs:
         dirname = job['summary']
         output = os.path.join('jobs', dirname, 'output')
@@ -285,7 +286,10 @@ def clean():
             continue
         with open(output, 'r') as fd:
             s = fd.read()
-        has_error = "all CUDA-capable devices are busy or unavailable" in s
+        has_error = (
+            ("all CUDA-capable devices are busy or unavailable" in s) or
+            ("no CUDA-capable device is detected" in s)
+        )
         if has_error:
             print('make the state of {} available'.format(job['summary']))
             db.modify_state_of(job['summary'], AVAILABLE)
@@ -458,7 +462,7 @@ def _train_model(params):
         dataloader_train = torch.utils.data.DataLoader(
             dataset, batch_size=batchSize,
             sampler=SamplerFromIndices(dataset, perm_train),
-            num_workers=0)
+            num_workers=1)
         dataloader_valid = torch.utils.data.DataLoader(
             dataset_valid, batch_size=batchSize,
             sampler=SamplerFromIndices(dataset, perm_valid),
@@ -516,15 +520,15 @@ def _train_model(params):
     else:
         yteacher_train = torch.load(predictions_filename)
         #check if predictions save are correect
-        """
         print('check if predictions are correct')
         for b, (X, y) in enumerate(dataloader_train):
             input.data.resize_(X.size()).copy_(X)
             ypred = clf(norm(input, clf_mean, clf_std)).data.cpu()
             ytrue = yteacher_train[b * batchSize:b * batchSize + input.size(0)]
-            print(ytrue[0, 0], ypred[0, 0])
+            #print(ytrue[0, 0], ypred[0, 0])
             assert (torch.abs(ytrue - ypred) > 1e-3).sum() == 0
-        """
+            if b == 10:
+                break
     """
     # Check the accuracy of the teacher on the generated data
     # good if high
