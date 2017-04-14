@@ -102,7 +102,6 @@ class MLPStudent(nn.Module):
         self.main = nn.Sequential(
             nn.Linear(nc * w * h, fc1),
             nn.Linear(fc1, fc2),
-            nn.BatchNorm1d(fc2),
             nn.ReLU(True),
             nn.Linear(fc2, no),
         )
@@ -111,28 +110,6 @@ class MLPStudent(nn.Module):
         input = input.view(input.size(0), -1)
         output = self.main(input)
         return output
-
-class ConvStudent(nn.Module):
-    def __init__(self, nc, w, h, no, nbf=512, fc=1000):
-        super(ConvStudent, self).__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(nc, nbf, 5),
-            nn.BatchNorm2d(nbf),
-            nn.ReLU(True),
-            nn.MaxPool2d(2),
-        )
-        wout = (w - 5 + 1) // 2
-        hout = (h - 5 + 1) // 2
-        self.fc = nn.Sequential(
-            nn.Linear(wout * hout * nbf, fc),
-            nn.Linear(fc, no)
-        )
-        
-    def forward(self, input):
-        x = self.features(input)
-        x = x.view(x.size(0), -1)
-        x = self.fc(x)
-        return x
 
 
 class ConvFcStudent(nn.Module):
@@ -174,19 +151,67 @@ def get_acc(pred, true):
     _, true_classes = true.max(1)
     return (pred_classes == true_classes).float().mean()
 
-def insert(*, nb=1, data_source=None):
+
+def insert(*, nb=1, data_source=None, model=None, bayesopt=False):
     db = load_db()
-    nb_inserted = 0
     rng = random
-    for _ in range(nb):
-        content = _sample(rng)
-        if data_source:
-            content['data_source'] = data_source
-        print(content, content['data_source'])
-        nb_inserted += db.safe_add_job(content, model=content['model'])
+    sample_func = partial(_sample, data_source=data_source, model=model)
+    if bayesopt:
+        params_list = _sample_bayesopt(nb=nb, sample_func=sample_func, data_source=data_source)
+    else:
+        params_list = [sample_func(rng) for _ in range(nb)]
+    nb_inserted = 0
+    for params in params_list:
+        print(params, params['data_source'])
+        nb_inserted += db.safe_add_job(params, model=params['model'])
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
-def insert_bayesopt(*, nb=1, data_source=None):
+
+def _sample(rng, model=None, data_source=None):
+    if not model:
+        model = rng.choice(('convfc',))
+    if not data_source:
+        data_source = rng.choice(('dataset', 'aux2', 'dataset_simple'))
+    if model == 'convfc':
+        sf = rng.choice((3, 5))
+        nbf = rng.choice((32, 64, 96, 128, 192, 256, 512, 600, 650, 700, 800, 900, 1000))
+        fc1 = rng.randint(1, 10) * 100
+        fc2 = rng.randint(1, 100) * 100
+        hypers = {
+            'nbf': nbf,
+            'sf': sf,
+            'fc1': fc1,
+            'fc2': fc2,
+        }
+    elif model == 'mlp':
+        fc1 = rng.randint(1, 10) * 100
+        fc2 = rng.randint(1, 100) * 100
+        hypers = {
+            'fc1': fc1,
+            'fc2': fc2
+        }
+    else:
+        raise ValueError(model)
+    algo = rng.choice(('adam', 'nesterov', 'sgd'))
+    momentum = rng.uniform(0.5, 0.95) if algo == 'nesterov' else None
+    lr = _loguniform(rng, -5, -2)
+    params = {
+        'model': model,
+        'hypers': hypers,
+        'algo': algo,
+        'lr': lr,
+        'algo': algo,
+        'momentum': momentum,
+    }
+    params['data_source'] = data_source 
+    return params
+
+
+def _loguniform(rng, low=0, high=1, base=10):
+    return base ** rng.uniform(low, high)
+
+
+def _sample_bayesopt(*, nb=1, sample_func=_sample, data_source=None):
     from fluentopt.bandit import Bandit
     from fluentopt.bandit import ucb_maximize
     from fluentopt.transformers import Wrapper
@@ -194,17 +219,12 @@ def insert_bayesopt(*, nb=1, data_source=None):
     from lightjob.db import SUCCESS
     from sklearn.ensemble import RandomForestRegressor
     import pandas as pd
-    def _sample_from(rng):
-        d = _sample(rng)
-        if data_source:
-            d['data_source'] = data_source
-        return d
     reg = RandomForestRegressorWithUncertainty(
         n_estimators=100, 
         min_samples_leaf=5,
         oob_score=True)
     opt = Bandit(
-        sampler=_sample_from, 
+        sampler=sample_func, 
         score=ucb_maximize, 
         model=Wrapper(reg, transform_X=_transform),
         nb_suggestions=1000
@@ -216,13 +236,9 @@ def insert_bayesopt(*, nb=1, data_source=None):
         jobs = [j for j in jobs if j['content']['data_source'] == data_source]
     X = [j['content'] for j in jobs]
     y = [np.min(j['stats']['valid_acc']) for j in jobs]
-    print(len(X))
+    print('{} examples from the surrogate to learn from'.format(len(X)))
     opt.update_many(X, y)
-    for _ in range(nb):
-        content = opt.suggest()
-        print(content)
-        #nb_inserted += db.safe_add_job(content, model=content['model'])
-    print('Inserted {} row(s) in the db'.format(nb_inserted))
+    return [opt.suggest() for _ in range(nb)]
 
 
 def _transform(dlist):
@@ -231,13 +247,14 @@ def _transform(dlist):
     dlist = copy.deepcopy(dlist)
     for d in dlist:
         d['algo'] = {'adam': 0, 'nesterov': 1, 'sgd': 2}[d['algo']]
-        d['data_source'] = {'aux1' : 0, 'aux2': 1, 'dataset': 2, 'dataset_old': 3}[d['data_source']]
+        d['data_source'] = {'aux1' : 0, 'aux2': 1, 'dataset': 2, 'dataset_old': 3, 'dataset_simple': 4}[d['data_source']]
         d['momentum'] = d['momentum'] if d['momentum'] else -1
-        d['model'] = {'convfc': 0}[d['model']]
+        d['model'] = {'convfc': 0, 'mlp': 1}[d['model']]
     return vectorize(dlist)
 
 
 def clean():
+    from shutil import rmtree
     db = load_db()
     # remove student.th form jobs with ERROR state
     jobs = db.jobs_with(state=ERROR)
@@ -258,6 +275,8 @@ def clean():
                 rmtree(path)
             except OSError as ex:
                 print(ex)
+    # make jobs that stopped abruptly without chaning state to ERROR
+    # to AVAILABLE again
     jobs = db.jobs_with(state=RUNNING)
     for job in jobs:
         dirname = job['summary']
@@ -268,55 +287,22 @@ def clean():
             s = fd.read()
         has_error = "all CUDA-capable devices are busy or unavailable" in s
         if has_error:
-           db.modify_state_of(job['summary'], AVAILABLE)
-
-def _sample(rng):
-    model = 'convfc'
-    rng = random
-    if model == 'convfc':
-        sf = rng.choice((3, 5))
-        nbf = rng.choice((32, 64, 96, 128, 192, 256, 512, 600, 650, 700, 800, 900, 1000))
-        fc1 = rng.randint(1, 10) * 100
-        fc2 = rng.randint(1, 100) * 100
-        hypers = {
-            'nbf': nbf,
-            'sf': sf,
-            'fc1': fc1,
-            'fc2': fc2,
-        }
-    else:
-        raise ValueError(model)
-    algo = rng.choice(('adam', 'nesterov', 'sgd'))
-    momentum = rng.uniform(0.5, 0.95) if algo == 'nesterov' else None
-    lr = _loguniform(rng, -5, -2)
-    params = {
-        'model': model,
-        'hypers': hypers,
-        'algo': algo,
-        'lr': lr,
-        'algo': algo,
-        'momentum': momentum,
-    }
-    params['data_source'] = rng.choice(('dataset', 'aux2'))
-    return params
+            print('make the state of {} available'.format(job['summary']))
+            db.modify_state_of(job['summary'], AVAILABLE)
 
 
-def _loguniform(rng, low=0, high=1, base=10):
-    return base ** rng.uniform(low, high)
 
-
-def train(id, *, budget_secs=3600. * 6, test=False):
+def train(id, *, budget_secs=3600. * 6):
     job_summary = id
     db = load_db()
     job = db.get_job_by_summary(id)
     params = job['content']
     state = job['state']
     
-    if not test:
-        if state != AVAILABLE:
-            warnings.warn('Job with id "{}" has a state : "{}", expecting it to be : "{}".Skip.'.format(job_summary, state, AVAILABLE))
-            return
-        db.modify_state_of(job_summary, RUNNING)
+    if state != AVAILABLE:
+        warnings.warn('Job with id "{}" has a state : "{}", expecting it to be : "{}".Skip.'.format(job_summary, state, AVAILABLE))
+        return
+    db.modify_state_of(job_summary, RUNNING)
     params['folder'] = _get_outdir(job_summary)
     params['budget_secs'] = budget_secs
     try:
@@ -325,13 +311,11 @@ def train(id, *, budget_secs=3600. * 6, test=False):
         traceback = _get_traceback() 
         print(traceback)
         warnings.warn('Job with id "{}" raised an exception : {}. Putting state to "error" and saving traceback.'.format(job_summary, ex))
-        if not test:
-            db.job_update(job_summary, {'traceback': traceback})
-            db.modify_state_of(job_summary, ERROR)
+        db.job_update(job_summary, {'traceback': traceback})
+        db.modify_state_of(job_summary, ERROR)
     else:
-        if not test:
-            db.modify_state_of(job_summary, SUCCESS)
-            db.job_update(job_summary, {'stats': result})
+        db.modify_state_of(job_summary, SUCCESS)
+        db.job_update(job_summary, {'stats': result})
         print('Job {} succesfully trained !'.format(job_summary))
 
 
@@ -344,6 +328,20 @@ def _get_traceback():
 def _get_outdir(job_summary):
     return 'jobs/{}'.format(job_summary)
 
+
+def train_random(*, data_source=None, model=None, bayesopt=False):
+    rng = random
+    sample_func = partial(_sample, data_source=data_source, model=model)
+    if bayesopt:
+        params, = _sample_bayesopt(nb=1, sample_func=sample_func, data_source=data_source)
+    else:
+        params = sample_func(rng)
+    if data_source:
+        params['data_source'] = data_source
+    params['budget_secs'] = 3600
+    params['folder'] = 'out/tmp'
+    print(params)
+    _train_model(params)
 
 def _train_model(params):
     classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
@@ -368,9 +366,6 @@ def _train_model(params):
     print('data source : {}'.format(data_source))
     
     hypers = params['hypers']
-    nbf = hypers['nbf']
-    fc1 = hypers['fc1']
-    fc2 = hypers['fc2']
     algo = params['algo']
     lr = params['lr']
     momentum = params['momentum']
@@ -395,8 +390,18 @@ def _train_model(params):
     
     clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
     clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
+    
+    m = params['model']
+    if m == 'convfc':
+        nbf = hypers['nbf']
+        fc1 = hypers['fc1']
+        fc2 = hypers['fc2']
+        S = ConvFcStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc1=fc1, fc2=fc2)
+    elif m == 'mlp':
+        fc1 = hypers['fc1']
+        fc2 = hypers['fc2']
+        S = MLPStudent(3, imageSize, imageSize, nb_classes, fc1=fc1, fc2=fc2)
 
-    S = ConvFcStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc1=fc1, fc2=fc2)
     S.apply(weights_init)
     S = S.cuda()
     
@@ -414,14 +419,24 @@ def _train_model(params):
     avg_loss = 0.
     avg_acc = 0.
     
-    transform = transforms.Compose([
-        HSV(0.06, 0.26, 0.2, 0.21, 0.13),
-        RandomHorizontalFlip(),
-        RandomSizedCrop(24),
-        transforms.Scale(32, interpolation=3),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-    ])
+    if data_source == 'dataset_simple':
+        transform = transforms.Compose([
+            transforms.Scale(imageSize),
+            transforms.CenterCrop(imageSize),
+            Rotation(-10, 10),
+            RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
+    else:
+        transform = transforms.Compose([
+            HSV(0.06, 0.26, 0.2, 0.21, 0.13),
+            RandomHorizontalFlip(),
+            RandomSizedCrop(24),
+            transforms.Scale(32, interpolation=3),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
 
     transform_valid = transforms.Compose([
         transforms.ToTensor(),
@@ -431,7 +446,7 @@ def _train_model(params):
     dataset = dset.CIFAR10(root=dataroot, download=True, transform=transform)
     dataset_valid = dset.CIFAR10(root=dataroot, download=True, transform=transform_valid)
     
-    if data_source in ('dataset', 'dataset_old'):
+    if data_source in ('dataset', 'dataset_old', 'dataset_simple'):
         predictions_filename = 'predictions/{}.th'.format(data_source)
         perm = np.arange(len(dataset))
         np.random.shuffle(perm)
@@ -443,7 +458,7 @@ def _train_model(params):
         dataloader_train = torch.utils.data.DataLoader(
             dataset, batch_size=batchSize,
             sampler=SamplerFromIndices(dataset, perm_train),
-            num_workers=8)
+            num_workers=0)
         dataloader_valid = torch.utils.data.DataLoader(
             dataset_valid, batch_size=batchSize,
             sampler=SamplerFromIndices(dataset, perm_valid),
@@ -502,10 +517,12 @@ def _train_model(params):
         yteacher_train = torch.load(predictions_filename)
         #check if predictions save are correect
         """
+        print('check if predictions are correct')
         for b, (X, y) in enumerate(dataloader_train):
             input.data.resize_(X.size()).copy_(X)
             ypred = clf(norm(input, clf_mean, clf_std)).data.cpu()
             ytrue = yteacher_train[b * batchSize:b * batchSize + input.size(0)]
+            print(ytrue[0, 0], ypred[0, 0])
             assert (torch.abs(ytrue - ypred) > 1e-3).sum() == 0
         """
     """
@@ -522,15 +539,16 @@ def _train_model(params):
         accs.append(acc)
         print(np.mean(accs))
     """
-
+    
     """
     # check if repassing through dataloader_train is determenistic
     # (uncomment to execute)
     for b, (X, y) in enumerate(dataloader_train):
         print(X.sum())
-
+        break
     for b, (X, y) in enumerate(dataloader_train):
         print(X.sum())
+        break
     sys.exit(0)
     """
     print('Start training...')
@@ -618,4 +636,4 @@ def _train_model(params):
     return result
 
 if __name__ == '__main__':
-    result = run(train, insert, clean, insert_bayesopt)
+    result = run(train, insert, clean, train_random)
