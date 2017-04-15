@@ -154,21 +154,31 @@ def get_acc(pred, true):
 
 
 def insert(*, nb=1, data_source=None, model=None, bayesopt=False):
-    db = load_db()
-    rng = random
-    sample_func = partial(_sample, data_source=data_source, model=model)
-    if bayesopt:
-        params_list = _sample_bayesopt(nb=nb, sample_func=sample_func, data_source=data_source)
-    else:
-        params_list = [sample_func(rng) for _ in range(nb)]
     nb_inserted = 0
+    params_list = _sample(nb=1, data_source=data_source, mode=model, bayesopt=bayesopt)
     for params in params_list:
-        print(params, params['data_source'])
         nb_inserted += db.safe_add_job(params, model=params['model'])
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
 
-def _sample(rng, model=None, data_source=None):
+def sample(*, nb=1, data_source=None, model=None, bayesopt=False):
+    params_list = _sample(nb=nb, data_source=data_source, model=model, bayesopt=bayesopt)
+    for params in params_list:
+        print(params)
+
+
+def _sample(nb=1, data_source=None, model=None, bayesopt=False):
+    db = load_db()
+    rng = random
+    sample_func = partial(_sample_unif, data_source=data_source, model=model)
+    if bayesopt:
+        params_list = _sample_bayesopt(nb=nb, sample_func=sample_func, data_source=data_source)
+    else:
+        params_list = [sample_func(rng) for _ in range(nb)]
+    return params_list
+
+
+def _sample_unif(rng, model=None, data_source=None):
     if not model:
         model = rng.choice(('convfc',))
     if not data_source:
@@ -212,7 +222,7 @@ def _loguniform(rng, low=0, high=1, base=10):
     return base ** rng.uniform(low, high)
 
 
-def _sample_bayesopt(*, nb=1, sample_func=_sample, data_source=None):
+def _sample_bayesopt(*, nb=1, sample_func=_sample_unif, data_source=None):
     from fluentopt.bandit import Bandit
     from fluentopt.bandit import ucb_maximize
     from fluentopt.transformers import Wrapper
@@ -335,7 +345,7 @@ def _get_outdir(job_summary):
 
 def train_random(*, data_source=None, model=None, bayesopt=False):
     rng = random
-    sample_func = partial(_sample, data_source=data_source, model=model)
+    sample_func = partial(_sample_unif, data_source=data_source, model=model)
     if bayesopt:
         params, = _sample_bayesopt(nb=1, sample_func=sample_func, data_source=data_source)
     else:
@@ -640,4 +650,4 @@ def _train_model(params):
     return result
 
 if __name__ == '__main__':
-    result = run(train, insert, clean, train_random)
+    result = run(train, insert, clean, train_random, sample)
