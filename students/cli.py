@@ -155,8 +155,10 @@ def get_acc(pred, true):
 
 def insert(*, nb=1, data_source=None, model=None, bayesopt=False):
     nb_inserted = 0
-    params_list = _sample(nb=1, data_source=data_source, mode=model, bayesopt=bayesopt)
+    db = load_db()
+    params_list = _sample(nb=nb, data_source=data_source, model=model, bayesopt=bayesopt)
     for params in params_list:
+        print(params)
         nb_inserted += db.safe_add_job(params, model=params['model'])
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
