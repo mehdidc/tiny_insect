@@ -4,6 +4,7 @@ import random
 from skimage.color import rgb2hsv, hsv2rgb
 from PIL import Image
 import numpy as np
+import torch.utils.data as data
 
 import torch
 from torch.utils.data.sampler import Sampler
@@ -129,6 +130,7 @@ class DataAugmentationLoader:
         torch.manual_seed(i)
         torch.cuda.manual_seed(i)
         np.random.seed(i)
+        self.dataloader.dataset.epoch = i
         yield from self.dataloader
 
     def __len__(self):
@@ -171,3 +173,29 @@ def norm(x, mean, std):
     x = x - mean.repeat(x.size(0), 1, x.size(2), x.size(3))
     x = x / std.repeat(x.size(0), 1, x.size(2), x.size(3))
     return x
+
+
+class Tiny(data.Dataset):
+
+    def __init__(self, path, transform=None, chunk_size=1024):
+        self.fd = open(path, 'rb')
+        self.transform = transform
+
+    def __getitem__(self, index):
+        # 40000 size of training data of cifar
+        offset = self.epoch * 40000 + index
+        self.fd.seek(index * 3072)
+        data = self.fd.read(3072)
+        data = np.fromstring(data, dtype='uint8')
+        data = data.reshape(32, 32, 3, order="F")
+        input = Image.fromarray(data)
+        target =  0
+        if self.transform:
+            input = self.transform(input)
+        return input, target
+
+    def __delete__(self):
+        self.fd.close()
+    
+    def __len__(self):
+        return 40000

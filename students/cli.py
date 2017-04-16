@@ -42,8 +42,11 @@ from data import SamplerFromIndices
 from data import DataAugmentationLoader
 from data import GeneratorLoader
 from data import norm
+from data import Tiny
+
 
 sys.path.append('../generators')
+
 
 class Gen(nn.Module):
     def __init__(self, imageSize=32, nz=100, nb_classes=18, nc=3, ngf=64):
@@ -394,9 +397,9 @@ def train_random(*, data_source=None, model=None, bayesopt=False):
 def _train_model(params):
     classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
     generators = {
-        'aux1': '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth',
-        'aux2': '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth',
-        'aux3': '../generators/samples/samples_cond_dcgan_cls_32/netG_epoch_72.pth'
+        'aux1': '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth', #trained using pretrained_aux_dcgan_32.py
+        'aux2': '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth', #traind using pretrained_aux_dcgan_32.py
+        'aux3': '../generators/samples/samples_cond_dcgan_cls_32/netG_epoch_72.pth' # trained using cond_dcgan_cls_32.py
     }
     nb_passes = 10
     batchSize = 32 
@@ -510,6 +513,28 @@ def _train_model(params):
         dataloader_train = torch.utils.data.DataLoader(
             dataset, batch_size=batchSize,
             sampler=SamplerFromIndices(dataset, perm_train),
+            num_workers=1)
+        dataloader_valid = torch.utils.data.DataLoader(
+            dataset_valid, batch_size=batchSize,
+            sampler=SamplerFromIndices(dataset, perm_valid),
+            num_workers=8)
+    elif data_source == 'tiny':
+        predictions_filename = 'predictions/{}.th'.format(data_source)
+        perm = np.arange(len(dataset))
+        np.random.shuffle(perm)
+        perm = torch.from_numpy(perm)
+        perm_train = perm[0:40000]
+        perm_valid = perm[40000:]
+        nb_train_examples = len(perm_train)
+        nb_valid_examples = len(perm_valid)
+        tiny = Tiny(
+           '/home/mcherti/work/data/tiny_images/tiny_images_subset.bin', 
+           transform=transforms.Compose([
+               transforms.ToTensor(),
+               transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        )
+        dataloader_train = torch.utils.data.DataLoader(
+            tiny, batch_size=batchSize,
             num_workers=1)
         dataloader_valid = torch.utils.data.DataLoader(
             dataset_valid, batch_size=batchSize,
