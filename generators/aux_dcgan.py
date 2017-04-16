@@ -1,4 +1,8 @@
-# Like Auxliary classifiers GAN paper : https://arxiv.org/abs/1610.09585
+# Like Auxliary classifiers GAN paper : https://arxiv.org/abs/1611.09585
+# discr : takes x, outputs class probas AND whether x is fake/real. the discr is trained to discriminate
+# between real and generated images and to classify well the real images.
+# gen   :  takes (noise, onehot of the class) as input, produces an image.  it is trained to fool the discr  and to make the discr
+#          predict the correct class (which is fed as onehot to the generator) 
 from __future__ import print_function
 from skimage.io import imsave
 import argparse
@@ -292,7 +296,7 @@ if __name__ == '__main__':
 
             if i % 100 == 0:
                 # the first 64 samples from the mini-batch are saved.
-                vutils.save_image((real_cpu[0:64,:,:,:]+1)/2., '%s/real_samples.png' % opt.outf, nrow=8)
+                vutils.save_image((real_cpu[0:64,:,:,:]+1)/2., '%s/real_samples.png' % opt.outf, nrow=9)
                 fake = netG(fixed_noise)
                 im = (fake.data + 1) / 2.
                 fname = '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch)

@@ -1,3 +1,11 @@
+"""
+autoencoder where the encoder part is frozen
+and the encoder part is learned.
+the encoder takes as input the image, and produces
+a latent variable h which is a layer from alexnet, then that latent variable,
+is used to reconstruct the image.
+this is not a GAN, the reconstruction loss is MSE.
+"""
 from __future__ import print_function
 import numpy as np
 from itertools import chain

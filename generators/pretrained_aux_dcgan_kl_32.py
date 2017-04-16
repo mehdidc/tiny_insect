@@ -1,8 +1,10 @@
-# Like conditional gan paper : https://arxiv.org/abs/1411.1784
-# discr takes image and onehot of the class, and produces whether real/fake
-# generator takes noise and onehot of the lass, and prodcuces an image.
-# generator trained to fool the discr.
+# like aux_dcgan but where the classifier part
+# is a pre-trained one (and the classifier is not updated)
+# but still the generator tries to make the classifier predict the correct class
 from __future__ import print_function
+from itertools import chain
+import numpy as np
+import sys
 from skimage.io import imsave
 import argparse
 import os
@@ -17,9 +19,10 @@ import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
 from torch.autograd import Variable
-from keras.utils.np_utils import to_categorical
 
-from machinedesign.viz import grid_of_images
+sys.path.append('../students')
+from data import SamplerFromIndices
+from loader import ImageFolder
 
 
 if __name__ == '__main__':
@@ -60,14 +63,14 @@ if __name__ == '__main__':
 
     if opt.dataset in ['imagenet', 'folder', 'lfw']:
         # folder dataset
-        dataset = dset.ImageFolder(root=opt.dataroot,
-                                   transform=transforms.Compose([
-                                       transforms.Scale(opt.imageSize),
+        dataset = ImageFolder(root=opt.dataroot,
+                              transform=transforms.Compose([
+                                 transforms.Scale(opt.imageSize),
                                        transforms.CenterCrop(opt.imageSize),
                                        transforms.RandomHorizontalFlip(),
                                        transforms.ToTensor(),
                                        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                                   ]))
+                                   ]), uniformize=True)
     elif opt.dataset == 'lsun':
         dataset = dset.LSUN(db_path=opt.dataroot, classes=['bedroom_train'],
                             transform=transforms.Compose([
@@ -78,6 +81,7 @@ if __name__ == '__main__':
                             ]))
     elif opt.dataset == 'cifar10':
         dataset = dset.CIFAR10(root=opt.dataroot, download=True,
+                               train=True,
                                transform=transforms.Compose([
                                    transforms.Scale(opt.imageSize),
                                    transforms.ToTensor(),
@@ -85,17 +89,29 @@ if __name__ == '__main__':
                                ])
         )
     assert dataset
+    #dataloader = torch.utils.data.DataLoader(
+    #    dataset, batch_size=opt.batchSize,
+    #    shuffle=True, 
+    #    num_workers=int(opt.workers))
+    np.random.seed(42)
+    perm = np.arange(len(dataset))
+    np.random.shuffle(perm)
+    perm = torch.from_numpy(perm)
+    perm_train = perm[0:40000]
+    perm_valid = perm[40000:]
+    nb_train_examples = len(perm_train)
+    nb_valid_examples = len(perm_valid)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=opt.batchSize,
-        shuffle=True, 
-        num_workers=int(opt.workers))
+        sampler=SamplerFromIndices(dataset, perm_train),
+        num_workers=8)
 
     ngpu = int(opt.ngpu)
     nz = int(opt.nz)
     ngf = int(opt.ngf)
     ndf = int(opt.ndf)
     nc = 3
-    nb_classes = 18
+    nb_classes = 10
     # custom weights initialization called on netG and netD
     def weights_init(m):
         classname = m.__class__.__name__
@@ -122,20 +138,14 @@ if __name__ == '__main__':
                 nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
                 nn.BatchNorm2d(ngf * 2),
                 nn.ReLU(True),
-                # state size. (ngf*2) x 16 x 16
-                nn.ConvTranspose2d(ngf * 2,     ngf, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ngf),
-                nn.ReLU(True),
+
                 # state size. (ngf) x 32 x 32
-                nn.ConvTranspose2d(    ngf,      nc, 4, 2, 1, bias=False),
+                nn.ConvTranspose2d(    ngf * 2,      nc, 4, 2, 1, bias=False),
                 nn.Tanh()
                 # state size. (nc) x 64 x 64
             )
         def forward(self, input):
-            gpu_ids = None
-            if isinstance(input.data, torch.cuda.FloatTensor) and self.ngpu > 1:
-                gpu_ids = range(self.ngpu)
-            return nn.parallel.data_parallel(self.main, input, gpu_ids)
+            return self.main(input)
 
     netG = _netG(ngpu)
     netG.apply(weights_init)
@@ -149,7 +159,7 @@ if __name__ == '__main__':
             self.ngpu = ngpu
             self.main = nn.Sequential(
                 # input is (nc) x 64 x 64
-                nn.Conv2d(nc + nb_classes, ndf, 4, 2, 1, bias=False),
+                nn.Conv2d(nc, ndf, 4, 2, 1, bias=False),
                 nn.LeakyReLU(0.2, inplace=True),
                 # state size. (ndf) x 32 x 32
                 nn.Conv2d(ndf, ndf * 2, 4, 2, 1, bias=False),
@@ -159,20 +169,14 @@ if __name__ == '__main__':
                 nn.Conv2d(ndf * 2, ndf * 4, 4, 2, 1, bias=False),
                 nn.BatchNorm2d(ndf * 4),
                 nn.LeakyReLU(0.2, inplace=True),
-                # state size. (ndf*4) x 8 x 8
-                nn.Conv2d(ndf * 4, ndf * 8, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ndf * 8),
-                nn.LeakyReLU(0.2, inplace=True),
+
                 # state size. (ndf*8) x 4 x 4
-                nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False),
+                nn.Conv2d(ndf * 4,  1, 4, 1, 0, bias=False),
                 nn.Sigmoid()
             )
         def forward(self, input):
-            gpu_ids = None
-            if isinstance(input.data, torch.cuda.FloatTensor) and self.ngpu > 1:
-                gpu_ids = range(self.ngpu)
-            output = nn.parallel.data_parallel(self.main, input, gpu_ids)
-            return output.view(-1, 1)
+            out = self.main(input)
+            return out.view(-1, 1)
 
     netD = _netD(ngpu)
     netD.apply(weights_init)
@@ -185,7 +189,7 @@ if __name__ == '__main__':
     input = torch.FloatTensor(opt.batchSize, 3, opt.imageSize, opt.imageSize)
     noise = torch.FloatTensor(opt.batchSize, nz, 1, 1)
 
-    nb_rows = 10
+    nb_rows = 5
     fixed_z = torch.randn   (nb_rows, nb_classes,        nz, 1, 1)
     #fixed_z = fixed_z.repeat(1,      nb_classes, 1, 1, 1)
     fixed_z = fixed_z.view(nb_rows * nb_classes, nz, 1, 1)
@@ -206,6 +210,33 @@ if __name__ == '__main__':
         input, label = input.cuda(), label.cuda()
         noise, fixed_noise = noise.cuda(), fixed_noise.cuda()
 
+    sys.path.append('/home/mcherti/work/code/external/densenet.pytorch')
+    clf = torch.load('/home/mcherti/work/code/external/densenet.pytorch/model/model.th')
+    clf = clf.cuda()
+
+    if 'cifar10' in opt.dataroot:
+        mean = [0.49139968, 0.48215827, 0.44653124]
+        std = [0.24703233, 0.24348505, 0.26158768]
+    else:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+    
+    clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
+    clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
+
+    def norm(x):
+        x = (x + 1) / 2.
+        x = x - clf_mean.repeat(x.size(0), 1, x.size(2), x.size(3))
+        x = x / clf_std.repeat(x.size(0), 1, x.size(2), x.size(3))
+        return x
+    
+    def kl(p, q):
+        p = nn.Softmax()(p)
+        q = nn.Softmax()(q)
+        return ((-p * torch.log(q)).sum(1) + (p * torch.log(p)).sum(1)).mean()
+
+    aux_criterion = nn.CrossEntropyLoss().cuda()
+
     input = Variable(input)
     label = Variable(label)
     noise = Variable(noise)
@@ -214,64 +245,88 @@ if __name__ == '__main__':
     # setup optimizer
     optimizerD = optim.Adam(netD.parameters(), lr = opt.lr, betas = (opt.beta1, 0.999))
     optimizerG = optim.Adam(netG.parameters(), lr = opt.lr, betas = (opt.beta1, 0.999))
+    optimizerC = optim.SGD(clf.parameters(), lr=1e-4)
+ 
 
     for epoch in range(opt.niter):
         for i, data in enumerate(dataloader):
-            ############################
-            # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
-            ###########################
-            # train with real
             netD.zero_grad()
             real_cpu, real_classes = data
 
             real_classes = real_classes.long().view(-1, 1)
+            real_classes_var = Variable(real_classes[:, 0]).cuda()
             batch_size = real_cpu.size(0)
             
             y_onehot = torch.zeros(batch_size, nb_classes)
             y_onehot.scatter_(1, real_classes, 1)
-            y_onehot_ = y_onehot
-            y_onehot = y_onehot.view(y_onehot.size(0), y_onehot.size(1), 1, 1)
-            y_onehot = y_onehot.repeat(1, 1, real_cpu.size(2), real_cpu.size(3))
-            real_cpu_with_class = torch.cat((real_cpu, y_onehot), 1)
 
-            input.data.resize_(real_cpu_with_class.size()).copy_(real_cpu_with_class)
+            input.data.resize_(real_cpu.size()).copy_(real_cpu)
             label.data.resize_(batch_size).fill_(real_label)
-    
+            
+            #input_ = norm(nn.UpsamplingBilinear2d(scale_factor=2)(input))
+            input_ = norm(input)
+            clf_output = clf(input_)
+            clf_output_real = clf_output
+
             output = netD(input)
-            errD_real = criterion(output, label)
+            errD_real = (
+                criterion(output, label)# 
+                #aux_criterion(clf_output, real_classes_var)
+            )
+            
+            _, pred = clf_output.max(1)
+            acc_real = torch.mean((pred.data.cpu()[:, 0] == real_classes[:, 0]).float())
+
             errD_real.backward()
             D_x = output.data.mean()
 
             # train with fake
             z = torch.randn(batch_size, nz, 1, 1)
-            z = torch.cat((z, y_onehot_), 1)
+            z = torch.cat((z, y_onehot), 1)
             noise.data.resize_(z.size()).copy_(z)
             fake = netG(noise)
             
-            fake_with_class = torch.cat( (fake, Variable(y_onehot).cuda()), 1)
-
             label.data.fill_(fake_label)
-            output = netD(fake_with_class.detach())
-            errD_fake = criterion(output, label)
-            errD_fake.backward()
+            output = netD(fake.detach())
+
+            #fake_ = norm(nn.UpsamplingBilinear2d(scale_factor=2)(fake))
+            fake_ = norm(fake)
+            clf_output = clf(fake_)
+            errD_fake = (
+                criterion(output, label) #+ 
+                #kl(clf_output_real, clf_output)
+                #aux_criterion(clf_output, real_classes_var)
+            )
+
+            _, pred = clf_output.max(1)
+            acc_fake = torch.mean((pred.data.cpu()[:, 0] == real_classes[:, 0]).float())
+
+            errD_fake.backward(retain_variables=True)
             D_G_z1 = output.data.mean()
             errD = errD_real + errD_fake
             optimizerD.step()
-
+            #optimizerC.step()
             ############################
             # (2) Update G network: maximize log(D(G(z)))
             ###########################
             netG.zero_grad()
+            clf.zero_grad()
             label.data.fill_(real_label) # fake labels are real for generator cost
-            output = netD(fake_with_class)
-            errG = criterion(output, label)
+            output = netD(fake)
+            clf_output = clf(fake_)
+            kl_divergence = kl(clf_output_real, clf_output)
+            errG = (
+                criterion(output, label) + 
+                kl_divergence +
+                aux_criterion(clf_output, real_classes_var)
+            )
             errG.backward()
             D_G_z2 = output.data.mean()
             optimizerG.step()
 
-            print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
+            print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f acc_real : %.4f acc_fake : %.4f  kl : %.4f'
                   % (epoch, opt.niter, i, len(dataloader),
-                     errD.data[0], errG.data[0], D_x, D_G_z1, D_G_z2))
+                     errD.data[0], errG.data[0], acc_real, acc_fake, kl_divergence.data[0]))
             if i % 100 == 0:
                 # the first 64 samples from the mini-batch are saved.
                 vutils.save_image((real_cpu[0:64,:,:,:]+1)/2., '%s/real_samples.png' % opt.outf, nrow=8)

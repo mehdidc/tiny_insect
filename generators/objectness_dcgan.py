@@ -1,6 +1,5 @@
 #dcgan but with an addition that the generator
 # maximizes the objectness according to a pre-trained classifier
-
 from __future__ import print_function
 import sys
 import argparse

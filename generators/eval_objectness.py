@@ -1,3 +1,6 @@
+"""
+this script is meant to evaluate the objectness of a set of images
+"""
 from __future__ import print_function
 from collections import defaultdict
 from clize import run

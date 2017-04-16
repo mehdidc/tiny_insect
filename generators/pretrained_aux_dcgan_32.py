@@ -1,5 +1,6 @@
 # like aux_dcgan but where the classifier part
 # is a pre-trained one (and the classifier is not updated)
+# this is for cifar
 from __future__ import print_function
 from itertools import chain
 import numpy as np

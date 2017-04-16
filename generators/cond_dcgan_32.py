@@ -1,4 +1,4 @@
-# Like conditional gan paper : https://arxiv.org/abs/1411.1784
+# like con dcgan but for 32x32 images = for cifar
 from __future__ import print_function
 from skimage.io import imsave
 import argparse

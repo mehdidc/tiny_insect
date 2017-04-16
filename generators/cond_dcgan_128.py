@@ -1,4 +1,4 @@
-# Like conditional gan paper : https://arxiv.org/abs/1411.1784 from 128x128 image
+# like cond_dcgan.py but for 128x128
 from __future__ import print_function
 from skimage.io import imsave
 import argparse
