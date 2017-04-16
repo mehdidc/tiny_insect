@@ -97,6 +97,7 @@ class Gen(nn.Module):
         x = self.main(input)
         return x
 
+
 class MLPStudent(nn.Module):
     def __init__(self, nc, w, h, no, fc1=250, fc2=1000):
         super(MLPStudent, self).__init__()
@@ -163,6 +164,7 @@ def insert(*, nb=1, data_source=None, model=None, bayesopt=False):
     params_list = _sample(nb=nb, data_source=data_source, model=model, bayesopt=bayesopt)
     for params in params_list:
         print(params)
+        _check(params)
         nb_inserted += db.safe_add_job(params, model=params['model'])
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
@@ -180,6 +182,7 @@ def insert_best(*, data_source=None, model=None, top=1):
         value = y[ind]
         if data_source:
             params['data_source'] = data_source
+        _check(params)
         nb_inserted += db.safe_add_job(params, model=params['model'])
         print(params, value)
     print('Inserted {} row(s) in the db'.format(nb_inserted))
@@ -290,6 +293,10 @@ def _transform(dlist):
     return vectorize(dlist)
 
 
+def _check(params):
+    assert params['data_source'] in ('aux1', 'aux2', 'dataset', 'dataset_simple', 'aux3'), 'Wrong data source : "{}"'.format(params['data_source'])
+
+
 def clean():
     from shutil import rmtree
     db = load_db()
@@ -324,7 +331,8 @@ def clean():
             s = fd.read()
         has_error = (
             ("all CUDA-capable devices are busy or unavailable" in s) or
-            ("no CUDA-capable device is detected" in s)
+            ("no CUDA-capable device is detected" in s) or 
+            ("ValueError: nothing to open" in s)
         )
         if has_error:
             print('make the state of {} available'.format(job['summary']))
