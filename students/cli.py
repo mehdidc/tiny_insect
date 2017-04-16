@@ -188,7 +188,7 @@ def _sample_unif(rng, model=None, data_source=None):
     if not model:
         model = rng.choice(('convfc',))
     if not data_source:
-        data_source = rng.choice(('dataset', 'aux2', 'dataset_simple'))
+        data_source = rng.choice(('dataset', 'aux2', 'dataset_simple', 'aux3'))
     if model == 'convfc':
         sf = rng.choice((3, 5))
         nbf = rng.choice((32, 64, 96, 128, 192, 256, 512, 600, 650, 700, 800, 900, 1000))
@@ -265,7 +265,7 @@ def _transform(dlist):
     dlist = copy.deepcopy(dlist)
     for d in dlist:
         d['algo'] = {'adam': 0, 'nesterov': 1, 'sgd': 2}[d['algo']]
-        d['data_source'] = {'aux1' : 0, 'aux2': 1, 'dataset': 2, 'dataset_old': 3, 'dataset_simple': 4}[d['data_source']]
+        d['data_source'] = {'aux1' : 0, 'aux2': 1, '' 'dataset': 2, 'dataset_old': 3, 'dataset_simple': 4, 'aux3': 5}[d['data_source']]
         d['momentum'] = d['momentum'] if d['momentum'] else -1
         d['model'] = {'convfc': 0, 'mlp': 1}[d['model']]
         d['xavier'] = d.get('xavier', 0)
@@ -369,7 +369,8 @@ def _train_model(params):
     classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
     generators = {
         'aux1': '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth',
-        'aux2': '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth'
+        'aux2': '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth',
+        'aux3': '../generators/samples/samples_cond_dcgan_cls_32/netG_epoch_72.pth'
     }
     nb_passes = 10
     batchSize = 32 
