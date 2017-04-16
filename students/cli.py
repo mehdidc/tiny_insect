@@ -136,10 +136,14 @@ class ConvFcStudent(nn.Module):
         x = self.fc(x)
         return x
 
-def weights_init(m):
+def weights_init(m, xavier=False):
     classname = m.__class__.__name__
     if classname.find('Conv2d') != -1:
-        m.weight.data.normal_(0.0, 0.02)
+        if xavier:
+            xavier_uniform(m.weight.data, gain=math.sqrt(2.))
+            m.bias.data.fill_(0)
+        else:
+            m.weight.data.normal_(0.0, 0.02)
     elif classname.find('BatchNorm') != -1:
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
@@ -216,6 +220,7 @@ def _sample_unif(rng, model=None, data_source=None):
         'algo': algo,
         'momentum': momentum,
     }
+    params['xavier'] = True
     params['data_source'] = data_source 
     return params
 
@@ -263,6 +268,7 @@ def _transform(dlist):
         d['data_source'] = {'aux1' : 0, 'aux2': 1, 'dataset': 2, 'dataset_old': 3, 'dataset_simple': 4}[d['data_source']]
         d['momentum'] = d['momentum'] if d['momentum'] else -1
         d['model'] = {'convfc': 0, 'mlp': 1}[d['model']]
+        d['xavier'] = d.get('xavier', 0)
     return vectorize(dlist)
 
 
@@ -417,8 +423,11 @@ def _train_model(params):
         fc1 = hypers['fc1']
         fc2 = hypers['fc2']
         S = MLPStudent(3, imageSize, imageSize, nb_classes, fc1=fc1, fc2=fc2)
-
-    S.apply(weights_init)
+    
+    if params.get('xavier') == True:
+        S.apply(partial(weights_init, xavier=True))
+    else:
+        S.apply(weights_init)
     S = S.cuda()
     
     input = torch.zeros(batchSize, 3, imageSize, imageSize)
