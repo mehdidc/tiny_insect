@@ -167,6 +167,24 @@ def insert(*, nb=1, data_source=None, model=None, bayesopt=False):
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
 
+def insert_best(*, data_source=None, model=None, top=1):
+    db = load_db()
+    jobs = db.jobs_with_state(SUCCESS)
+    jobs = list(jobs)
+    X = [j['content'] for j in jobs]
+    y = [np.max(j['stats']['valid_acc']) for j in jobs]
+    indices = np.argsort(y)[::-1]
+    nb_inserted = 0
+    for ind in indices[0:top]:
+        params = X[ind]
+        value = y[ind]
+        if data_source:
+            params['data_source'] = data_source
+        nb_inserted += db.safe_add_job(params, model=params['model'])
+        print(params, value)
+    print('Inserted {} row(s) in the db'.format(nb_inserted))
+
+
 def sample(*, nb=1, data_source=None, model=None, bayesopt=False):
     params_list = _sample(nb=nb, data_source=data_source, model=model, bayesopt=bayesopt)
     for params in params_list:
@@ -253,7 +271,7 @@ def _sample_bayesopt(*, nb=1, sample_func=_sample_unif, data_source=None):
     if data_source:
         jobs = [j for j in jobs if j['content']['data_source'] == data_source]
     X = [j['content'] for j in jobs]
-    y = [np.min(j['stats']['valid_acc']) for j in jobs]
+    y = [np.max(j['stats']['valid_acc']) for j in jobs]
     print('{} examples from the surrogate to learn from'.format(len(X)))
     opt.update_many(X, y)
     return [opt.suggest() for _ in range(nb)]
@@ -662,4 +680,4 @@ def _train_model(params):
     return result
 
 if __name__ == '__main__':
-    result = run(train, insert, clean, train_random, sample)
+    result = run(train, insert, clean, train_random, sample, insert_best)
