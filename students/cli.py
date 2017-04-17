@@ -140,6 +140,34 @@ class ConvFcStudent(nn.Module):
         x = self.fc(x)
         return x
 
+class Conv2FcStudent(nn.Module):
+    def __init__(self, nc, w, h, no, nbf1=512, nbf2=512, fc=250, sf=5):
+        super(Conv2FcStudent, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(nc, nbf1, sf),
+            nn.ReLU(True),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(nbf1, nbf2, sf),
+            nn.ReLU(True),
+            nn.MaxPool2d(2),
+
+        )
+        wout = ((w - sf + 1) // 2 - sf + 1) // 2
+        hout = ((h - sf + 1) // 2 - sf + 1) // 2
+        self.fc = nn.Sequential(
+            nn.Linear(wout * hout * nbf2, fc),
+            nn.ReLU(True),
+            nn.Linear(fc, no)
+        )
+        
+    def forward(self, input):
+        x = self.features(input)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+
+
 def weights_init(m, xavier=False):
     classname = m.__class__.__name__
     if classname.find('Conv2d') != -1:
@@ -210,7 +238,7 @@ def _sample(nb=1, data_source=None, model=None, bayesopt=False):
 
 def _sample_unif(rng, model=None, data_source=None):
     if not model:
-        model = rng.choice(('convfc',))
+        model = rng.choice(('convfc', 'conv2fc'))
     if not data_source:
         data_source = rng.choice(('dataset', 'aux2', 'dataset_simple', 'aux3'))
     if model == 'convfc':
@@ -223,6 +251,17 @@ def _sample_unif(rng, model=None, data_source=None):
             'sf': sf,
             'fc1': fc1,
             'fc2': fc2,
+        }
+    elif model == 'conv2fc':
+        sf = rng.choice((3, 5))
+        nbf1 = rng.choice((32, 64, 96, 128, 192, 256, 512))
+        nbf2 = rng.choice((32, 64, 96, 128, 192, 256, 512))
+        fc = rng.randint(1, 10) * 100
+        hypers = {
+            'nbf1': nbf1,
+            'nbf2': nbf2,
+            'sf': sf,
+            'fc': fc,
         }
     elif model == 'mlp':
         fc1 = rng.randint(1, 10) * 100
@@ -289,15 +328,17 @@ def _transform(dlist):
     dlist = copy.deepcopy(dlist)
     for d in dlist:
         d['algo'] = {'adam': 0, 'nesterov': 1, 'sgd': 2}[d['algo']]
-        d['data_source'] = {'aux1' : 0, 'aux2': 1, '' 'dataset': 2, 'dataset_old': 3, 'dataset_simple': 4, 'aux3': 5}[d['data_source']]
+        d['data_source'] = {'aux1' : 0, 'aux2': 1, '' 'dataset': 2, 'dataset_old': 3, 'dataset_simple': 4, 'aux3': 5, 'tiny': 6}[d['data_source']]
         d['momentum'] = d['momentum'] if d['momentum'] else -1
-        d['model'] = {'convfc': 0, 'mlp': 1}[d['model']]
+        d['model'] = {'convfc': 0, 'mlp': 1, 'conv2fc': 2}[d['model']]
         d['xavier'] = d.get('xavier', 0)
-    return vectorize(dlist)
+    v  = vectorize(dlist)
+    v[np.isnan(v)] = -1
+    return v
 
 
 def _check(params):
-    assert params['data_source'] in ('aux1', 'aux2', 'dataset', 'dataset_simple', 'aux3'), 'Wrong data source : "{}"'.format(params['data_source'])
+    assert params['data_source'] in ('aux1', 'aux2', 'dataset', 'dataset_simple', 'aux3', 'tiny'), 'Wrong data source : "{}"'.format(params['data_source'])
 
 
 def clean():
@@ -449,6 +490,11 @@ def _train_model(params):
         fc1 = hypers['fc1']
         fc2 = hypers['fc2']
         S = ConvFcStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc1=fc1, fc2=fc2)
+    elif m == 'conv2fc':
+        nbf1 = hypers['nbf1']
+        nbf2 = hypers['nbf2']
+        fc = hypers['fc']
+        S = Conv2FcStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, fc=fc)
     elif m == 'mlp':
         fc1 = hypers['fc1']
         fc2 = hypers['fc2']

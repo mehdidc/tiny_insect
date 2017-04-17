@@ -5,6 +5,7 @@ from skimage.color import rgb2hsv, hsv2rgb
 from PIL import Image
 import numpy as np
 import torch.utils.data as data
+from torch.autograd import Variable
 
 import torch
 from torch.utils.data.sampler import Sampler
@@ -130,7 +131,8 @@ class DataAugmentationLoader:
         torch.manual_seed(i)
         torch.cuda.manual_seed(i)
         np.random.seed(i)
-        self.dataloader.dataset.epoch = i
+        if hasattr(self.dataloader, 'dataset'):
+            self.dataloader.dataset.epoch = i
         yield from self.dataloader
 
     def __len__(self):
@@ -166,6 +168,53 @@ class GeneratorLoader:
     def __len__(self):
         return self.nb_minibatches
 
+class GeneratorLoaderDomainTransfer:
+
+    def __init__(self, G, z, onehot, u, source):
+        self.G = G
+        self.z = z
+        self.onehot = onehot
+        self.u = u
+        self.source = source
+
+    def __iter__(self):
+        G = self.G
+        z = self.z
+        onehot = self.onehot
+        u = self.u
+        for X, _ in self.source:
+            z.data.normal_()
+            onehot.data.zero_()
+            u.uniform_()
+            classes = u.max(1)[1]
+            onehot.data.scatter_(1, classes, 1)
+            z_ = z.repeat(1, 1, X.size(2), X.size(3))
+            onehot_ = onehot.repeat(1, 1, X.size(2), X.size(3))
+            X = Variable(X).cuda()
+            g_input = torch.cat((X, z_, onehot_), 1)
+            out = G(g_input)
+            input = out.data
+            yield input, classes
+    
+    def __len__(self):
+        return len(self.source)
+
+class MergeLoader:
+
+    def __init__(self, loaders):
+        self.loaders = loaders
+
+    def __iter__(self):
+
+        for data in zip(*self.loaders):
+            xlist = [x.cuda() for x, y  in data]
+            ylist = [y.cuda() for x, y in data]
+            X = torch.cat(xlist, 0)
+            y = torch.cat(ylist, 0)
+            yield X, y
+    
+    def __len__(self):
+        return min(map(len, self.loaders))
 
 def norm(x, mean, std):
     x = x + 1
@@ -184,7 +233,7 @@ class Tiny(data.Dataset):
     def __getitem__(self, index):
         # 40000 size of training data of cifar
         offset = self.epoch * 40000 + index
-        self.fd.seek(index * 3072)
+        self.fd.seek(offset * 3072)
         data = self.fd.read(3072)
         data = np.fromstring(data, dtype='uint8')
         data = data.reshape(32, 32, 3, order="F")
