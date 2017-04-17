@@ -12,6 +12,12 @@ from torch.utils.data.sampler import Sampler
 
 
 class RandomHorizontalFlip:
+    """
+    transformer which randomy flips the image vertically.
+    it alreadt exists in torchvision, but I had issues with
+    reproducing experiments when using the torchvision version.
+    I use np random here which works.
+    """
     def __call__(self, img):
         if np.random.random() < 0.5:
             return img.transpose(Image.FLIP_LEFT_RIGHT)
@@ -19,7 +25,10 @@ class RandomHorizontalFlip:
 
 
 class Rotation:
-
+    """
+    transformer which rotates image using an angle (deg) sampled
+    randomly from [min_val, max_val]
+    """
     def __init__(self, min_val, max_val):
         self.min_val = min_val
         self.max_val = max_val
@@ -30,7 +39,9 @@ class Rotation:
 
 
 class HSV:
-
+    """
+    HSV data augmentation like the one in 'do deep convnets really need to be deep'
+    """
     def __init__(self, hue_shift, saturation_shift, value_shift, saturation_scale, value_scale):
         self.hue_shift = hue_shift
         self.saturation_shift = saturation_shift
@@ -43,6 +54,9 @@ class HSV:
 
 
 class RandomSizedCrop:
+    """
+    random crop form torchvision but using numpy random
+    """
     def __init__(self, size, interpolation=Image.BILINEAR):
         self.size = size
         self.interpolation = interpolation
@@ -139,6 +153,29 @@ class DataAugmentationLoader:
         return len(self.dataloader) * self.nb_epochs
 
 
+class DataAugmentationLoaders:
+
+    def __init__(self, dataloaders, nb_epochs=1):
+        self.dataloaders = dataloaders
+        self.nb_epochs = nb_epochs
+
+    def __iter__(self):
+        for i in range(self.nb_epochs):
+            yield from self.epoch(i)
+    
+    def epoch(self, i):
+        for dataloader in self.dataloaders:
+            random.seed(i)
+            torch.manual_seed(i)
+            torch.cuda.manual_seed(i)
+            np.random.seed(i)
+            if hasattr(dataloader, 'dataset'):
+                dataloader.dataset.epoch = i
+            yield from dataloader
+
+    def __len__(self):
+        return sum(map(len, self.dataloaders)) * self.nb_epochs
+
 class GeneratorLoader:
 
     def __init__(self, G, z, onehot, u, nb_minibatches):
@@ -199,6 +236,7 @@ class GeneratorLoaderDomainTransfer:
     def __len__(self):
         return len(self.source)
 
+
 class MergeLoader:
 
     def __init__(self, loaders):
@@ -215,6 +253,7 @@ class MergeLoader:
     
     def __len__(self):
         return min(map(len, self.loaders))
+
 
 def norm(x, mean, std):
     x = x + 1

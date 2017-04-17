@@ -1,4 +1,5 @@
 import torch.utils.data as data
+import numpy as np
 from collections import defaultdict
 from PIL import Image
 import os
@@ -41,7 +42,6 @@ def uniformize_dataset(images):
     freq = defaultdict(int)
     for path, class_idx in images:
         freq[class_idx] += 1
-    print(freq)
     total = len(images)
     max_freq = max(freq.values())
 
@@ -81,8 +81,30 @@ class ImageFolder(data.Dataset):
             img = self.transform(img)
         if self.target_transform is not None:
             target = self.target_transform(target)
-
         return img, target
 
     def __len__(self):
         return len(self.imgs)
+
+class Tiny(data.Dataset):
+
+    def __init__(self, path, transform=None, chunk_size=1024):
+        self.fd = open(path, 'rb')
+        self.transform = transform
+
+    def __getitem__(self, index):
+        self.fd.seek(index * 3072)
+        data = self.fd.read(3072)
+        data = np.fromstring(data, dtype='uint8')
+        data = data.reshape(32, 32, 3, order="F")
+        input = Image.fromarray(data)
+        target =  0
+        if self.transform:
+            input = self.transform(input)
+        return input, target
+
+    def __delete__(self):
+        self.fd.close()
+    
+    def __len__(self):
+        return 200 * 40000

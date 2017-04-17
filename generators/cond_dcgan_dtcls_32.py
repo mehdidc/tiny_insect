@@ -29,8 +29,7 @@ from machinedesign.viz import grid_of_images
 sys.path.append('../students')
 from data import SamplerFromIndices
 from loader import ImageFolder
-
-
+from loader import Tiny
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -108,17 +107,23 @@ if __name__ == '__main__':
     perm_valid = perm[40000:]
     nb_train_examples = len(perm_train)
     nb_valid_examples = len(perm_valid)
-
+    tiny = Tiny(
+       '/home/mcherti/work/data/tiny_images/tiny_images_subset.bin', 
+       transform=transforms.Compose([
+           transforms.Scale(opt.imageSize),
+           transforms.CenterCrop(opt.imageSize),
+           transforms.RandomHorizontalFlip(),
+           transforms.ToTensor(),
+           transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+     ]))
     dataloader_A = torch.utils.data.DataLoader(
-        dataset, batch_size=opt.batchSize,
+        tiny, batch_size=opt.batchSize,
         shuffle=True,
         num_workers=8)
-
     dataloader_A_bis = torch.utils.data.DataLoader(
-        dataset, batch_size=100,
+        tiny, batch_size=100,
         shuffle=True,
         num_workers=8)
-
     dataloader_B = torch.utils.data.DataLoader(
         dataset, batch_size=opt.batchSize,
         sampler=SamplerFromIndices(dataset, perm_train),
@@ -206,7 +211,7 @@ if __name__ == '__main__':
     if opt.netD != '':
         netD.load_state_dict(torch.load(opt.netD))
     print(netD)
-
+    
     criterion = nn.BCELoss()
 
     input_A = torch.FloatTensor(opt.batchSize, 3, opt.imageSize, opt.imageSize)
@@ -224,11 +229,10 @@ if __name__ == '__main__':
         fixed_onehot[i, cl] = 1
     fixed_noise = torch.cat((fixed_z, fixed_onehot), 1)
     fixed_noise = fixed_noise.repeat(1, 1, opt.imageSize, opt.imageSize)
+    next(iter(dataloader_B))
     input = next(iter(dataloader_A_bis))[0][0:nb_rows*nb_classes]#.repeat(nb_rows * nb_classes, 1, 1, 1)
-    print(input.size(), fixed_noise.size(), type(input), type(fixed_noise))
     fixed_noise = torch.cat((input, fixed_noise), 1)
     fixed_noise = fixed_noise.cuda()
-    print(fixed_noise.size())
     label = torch.FloatTensor(opt.batchSize)
     real_label = 1
     fake_label = 0
@@ -353,9 +357,12 @@ if __name__ == '__main__':
                 # the first 64 samples from the mini-batch are saved.
                 vutils.save_image((input_A_cpu[0:64,:,:,:]+1)/2., '%s/real_samples_A.png' % opt.outf, nrow=8)
                 vutils.save_image((input_B_cpu[0:64,:,:,:]+1)/2., '%s/real_samples_B.png' % opt.outf, nrow=8)
-                fake = netG(fixed_noise)
                 im = (fake.data + 1) / 2.
                 fname = '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch)
+                vutils.save_image(im, fname, nrow=nb_classes)
+                fake = netG(fixed_noise)
+                im = (fake.data + 1) / 2.
+                fname = '%s/fixed_fake_samples_epoch_%03d.png' % (opt.outf, epoch)
                 vutils.save_image(im, fname, nrow=nb_classes)
 
         # do checkpointing

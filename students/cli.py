@@ -43,7 +43,8 @@ from data import DataAugmentationLoader
 from data import GeneratorLoader
 from data import norm
 from data import Tiny
-
+from data import MergeLoader
+from data import DataAugmentationLoaders
 
 sys.path.append('../generators')
 
@@ -338,7 +339,14 @@ def _transform(dlist):
 
 
 def _check(params):
-    assert params['data_source'] in ('aux1', 'aux2', 'dataset', 'dataset_simple', 'aux3', 'tiny'), 'Wrong data source : "{}"'.format(params['data_source'])
+    allowed = ('aux1', 'aux2', 'dataset', 'dataset_simple', 'aux3', 'tiny')
+    data_source = params['data_source']
+    if ',' in data_source:
+        for ds in data_source.split(','):
+            assert ds in allowed, 'Wrong data source : "{}"'.format(ds)
+        return
+    else:
+        assert data_source in allowed, 'Wrong data source : "{}"'.format(data_source)
 
 
 def clean():
@@ -435,97 +443,84 @@ def train_random(*, data_source=None, model=None, bayesopt=False):
     print(params)
     _train_model(params)
 
-def _train_model(params):
-    classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
-    generators = {
-        'aux1': '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth', #trained using pretrained_aux_dcgan_32.py
-        'aux2': '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth', #traind using pretrained_aux_dcgan_32.py
-        'aux3': '../generators/samples/samples_cond_dcgan_cls_32/netG_epoch_72.pth' # trained using cond_dcgan_cls_32.py
-    }
-    nb_passes = 10
-    batchSize = 32 
-    nz = 100 
-    nb_epochs = 200
+
+def _get_data(data_source, batchSize=32, augment=True):
+    np.random.seed(42)
+    dataroot = '/home/mcherti/work/data/cifar10'
     imageSize = 32
     nb_classes = 10
-    nb_epochs_before_reduce = 10
-    max_times_reduce_lr = 12
-    gamma = 0.5
-    reduce_wait = 8
-    dataroot = '/home/mcherti/work/data/cifar10'
-    data_source = params['data_source']
+    nz = 100
+    nb_epochs = 200
+    generators = {
+        'aux1': '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth', #trained using pretrained_aux_dcgan_32.py
+        'aux2': '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth', #trained using pretrained_aux_dcgan_32.py
+        'aux3': '../generators/samples/samples_cond_dcgan_cls_32/netG_epoch_72.pth' # trained using cond_dcgan_cls_32.py
+    }
+    classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
+    if  ' ' in data_source:
+        data_sources = data_source.split(' ')
+        dl_trains = []
+        yt_trains = []
+        nb_trains = []
+        bs = batchSize // len(data_sources)
+        for data_source in data_sources:
+            dl_train, dl_valid, yt_train, nb_train = _get_data(data_source, batchSize=bs, augment=False)
+            dl_trains.append(dl_train)
+            yt_trains.append(yt_train)
+            nb_trains.append(nb_train)
+        dataloader_train = MergeLoader(dl_trains)
+        dataloader_valid = dl_valid
+        assert len(set(nb_trains)) == 1, nb_trains
+        nb_train_examples = nb_trains[0]
+        sz = sum(yt.size(0) for yt in yt_trains)
+        yteacher_train = torch.zeros(sz, nb_classes)
+        for t, yt in enumerate(yt_trains):
+            k = t * bs  
+            for i in range(yt.size(0) // bs):
+                yteacher_train[k:k + bs] = yt[i * bs: (i + 1) * bs]
+                k += batchSize
+        dataloader_train = DataAugmentationLoader(dataloader_train, nb_epochs=nb_epochs)
+        return dataloader_train, dataloader_valid, yteacher_train, nb_train_examples
+
+    elif ',' in data_source:
+        data_sources = data_source.split(',')
+        dl_trains = []
+        yt_trains = []
+        nb_trains = []
+        bs = batchSize
+        for data_source in data_sources:
+            dl_train, dl_valid, yt_train, nb_train = _get_data(data_source, batchSize=bs, augment=False)
+            dl_trains.append(dl_train)
+            yt_trains.append(yt_train)
+            nb_trains.append(nb_train)
+        nb_train_examples = sum(nb_trains)
+        dataloader_valid = dl_valid
+        assert len(set(yt.size(0) for yt in yt_trains)) == 1
+        per_epoch = yt_trains[0].size(0) // nb_epochs
+        size = sum(yt.size(0) for yt in yt_trains)
+        yteacher_train = torch.zeros(size, nb_classes)
+        o = 0
+        l = 0
+        for epoch in range(nb_epochs):
+            for yt in yt_trains:
+                yteacher_train[l:l + per_epoch] = yt[o:o + per_epoch]
+                l += per_epoch
+            o += per_epoch
+        dataloader_train = DataAugmentationLoaders(dl_trains, nb_epochs=nb_epochs)
+        return dataloader_train, dataloader_valid, yteacher_train, nb_train_examples
+
     generator = generators.get(data_source)
-
-    print('data source : {}'.format(data_source))
-    
-    hypers = params['hypers']
-    algo = params['algo']
-    lr = params['lr']
-    momentum = params['momentum']
-
-    budget_secs = float(params['budget_secs'])
-    t0 = time.time()
-
-    folder = params['folder']
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-
-    torch.manual_seed(42)
-    random.seed(42)
-    np.random.seed(42)
-
-    sys.path.append(os.path.dirname(classifier))
-    sys.path.append(os.path.dirname(classifier) + '/..')
-    clf = torch.load(classifier)
-        
-    mean = [0.49139968, 0.48215827, 0.44653124]
-    std = [0.24703233, 0.24348505, 0.26158768]
-    
-    clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
-    clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
-    
-    m = params['model']
-    if m == 'convfc':
-        nbf = hypers['nbf']
-        fc1 = hypers['fc1']
-        fc2 = hypers['fc2']
-        S = ConvFcStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc1=fc1, fc2=fc2)
-    elif m == 'conv2fc':
-        nbf1 = hypers['nbf1']
-        nbf2 = hypers['nbf2']
-        fc = hypers['fc']
-        S = Conv2FcStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, fc=fc)
-    elif m == 'mlp':
-        fc1 = hypers['fc1']
-        fc2 = hypers['fc2']
-        S = MLPStudent(3, imageSize, imageSize, nb_classes, fc1=fc1, fc2=fc2)
-    
-    if params.get('xavier') == True:
-        S.apply(partial(weights_init, xavier=True))
-    else:
-        S.apply(weights_init)
-    S = S.cuda()
-    
-    input = torch.zeros(batchSize, 3, imageSize, imageSize)
-    input = Variable(input)
-    input = input.cuda()
-
-    if algo == 'adam':
-        optimizer = torch.optim.Adam(S.parameters(), lr=lr)
-    elif algo == 'nesterov':
-        optimizer = torch.optim.SGD(S.parameters(), lr=lr, nesterov=True, momentum=momentum)
-    elif algo == 'sgd':
-        optimizer = torch.optim.SGD(S.parameters(), lr=lr)
-
-    avg_loss = 0.
-    avg_acc = 0.
-    
     if data_source == 'dataset_simple':
         transform = transforms.Compose([
             transforms.Scale(imageSize),
             transforms.CenterCrop(imageSize),
             Rotation(-10, 10),
             RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        ])
+    elif data_source == 'dataset_raw':
+        transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ])
@@ -543,11 +538,9 @@ def _train_model(params):
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
-
     dataset = dset.CIFAR10(root=dataroot, download=True, transform=transform)
     dataset_valid = dset.CIFAR10(root=dataroot, download=True, transform=transform_valid)
-    
-    if data_source in ('dataset', 'dataset_old', 'dataset_simple'):
+    if data_source in ('dataset', 'dataset_old', 'dataset_simple', 'dataset_raw'):
         predictions_filename = 'predictions/{}.th'.format(data_source)
         perm = np.arange(len(dataset))
         np.random.shuffle(perm)
@@ -617,11 +610,25 @@ def _train_model(params):
             sampler=SamplerFromIndices(dataset, perm_valid),
             num_workers=8)
 
-    dataloader_train = DataAugmentationLoader(dataloader_train, nb_epochs=nb_epochs)
-    batches_per_epoch = nb_train_examples // batchSize
+    if augment:
+        dataloader_train = DataAugmentationLoader(dataloader_train, nb_epochs=nb_epochs)
+
     if not os.path.exists(predictions_filename):
+        sys.path.append(os.path.dirname(classifier))
+        sys.path.append(os.path.dirname(classifier) + '/..')
+        clf = torch.load(classifier)
+            
+        mean = [0.49139968, 0.48215827, 0.44653124]
+        std = [0.24703233, 0.24348505, 0.26158768]
+        
+        clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
+        clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
+     
         yteacher_train = torch.zeros(len(dataloader_train) * batchSize, nb_classes)
         print('Getting and storing predictions of train...')
+        input = torch.zeros(batchSize, 3, imageSize, imageSize)
+        input = Variable(input)
+        input = input.cuda()
         for b, (X, y) in enumerate(dataloader_train):
             if b % 100 == 0:
                 print('batch {}/{}'.format(b, len(dataloader_train)))
@@ -638,16 +645,6 @@ def _train_model(params):
         torch.save(yteacher_train, predictions_filename)
     else:
         yteacher_train = torch.load(predictions_filename)
-        #check if predictions save are correect
-        print('check if predictions are correct')
-        for b, (X, y) in enumerate(dataloader_train):
-            input.data.resize_(X.size()).copy_(X)
-            ypred = clf(norm(input, clf_mean, clf_std)).data.cpu()
-            ytrue = yteacher_train[b * batchSize:b * batchSize + input.size(0)]
-            #print(ytrue[0, 0], ypred[0, 0])
-            assert (torch.abs(ytrue - ypred) > 1e-3).sum() == 0
-            if b == 10:
-                break
     """
     # Check the accuracy of the teacher on the generated data
     # good if high
@@ -674,6 +671,98 @@ def _train_model(params):
         break
     sys.exit(0)
     """
+    return dataloader_train, dataloader_valid, yteacher_train, nb_train_examples
+
+def _train_model(params):
+    nb_passes = 10
+    batchSize = 32 
+    nb_epochs = 200
+    imageSize = 32
+    nb_classes = 10
+    nb_epochs_before_reduce = 10
+    max_times_reduce_lr = 12
+    gamma = 0.5
+    reduce_wait = 8
+    dataroot = '/home/mcherti/work/data/cifar10'
+    data_source = params['data_source']
+    classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
+    print('data source : {}'.format(data_source))
+    
+    hypers = params['hypers']
+    algo = params['algo']
+    lr = params['lr']
+    momentum = params['momentum']
+
+    budget_secs = float(params['budget_secs'])
+    t0 = time.time()
+
+    folder = params['folder']
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
+    torch.manual_seed(42)
+    random.seed(42)
+    np.random.seed(42)
+
+    sys.path.append(os.path.dirname(classifier))
+    sys.path.append(os.path.dirname(classifier) + '/..')
+    clf = torch.load(classifier)
+        
+    mean = [0.49139968, 0.48215827, 0.44653124]
+    std = [0.24703233, 0.24348505, 0.26158768]
+    
+    clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
+    clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
+    
+    m = params['model']
+    if m == 'convfc':
+        nbf = hypers['nbf']
+        fc1 = hypers['fc1']
+        fc2 = hypers['fc2']
+        S = ConvFcStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc1=fc1, fc2=fc2)
+    elif m == 'conv2fc':
+        nbf1 = hypers['nbf1']
+        nbf2 = hypers['nbf2']
+        fc = hypers['fc']
+        S = Conv2FcStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, fc=fc)
+    elif m == 'mlp':
+        fc1 = hypers['fc1']
+        fc2 = hypers['fc2']
+        S = MLPStudent(3, imageSize, imageSize, nb_classes, fc1=fc1, fc2=fc2)
+    
+    if params.get('xavier') == True:
+        S.apply(partial(weights_init, xavier=True))
+    else:
+        S.apply(weights_init)
+    S = S.cuda()
+    
+    input = torch.zeros(batchSize, 3, imageSize, imageSize)
+    input = Variable(input)
+    input = input.cuda()
+
+    if algo == 'adam':
+        optimizer = torch.optim.Adam(S.parameters(), lr=lr)
+    elif algo == 'nesterov':
+        optimizer = torch.optim.SGD(S.parameters(), lr=lr, nesterov=True, momentum=momentum)
+    elif algo == 'sgd':
+        optimizer = torch.optim.SGD(S.parameters(), lr=lr)
+    
+    dataloader_train, dataloader_valid, yteacher_train, nb_train_examples = _get_data(data_source=data_source, batchSize=batchSize)
+    batches_per_epoch = nb_train_examples // batchSize
+    #check if predictions save are correect
+    print('check if predictions are correct')
+    for b, (X, y) in enumerate(dataloader_train):
+        input.data.resize_(X.size()).copy_(X)
+        ypred = clf(norm(input, clf_mean, clf_std)).data.cpu()
+        ytrue = yteacher_train[b * batchSize:b * batchSize + input.size(0)]
+        assert (torch.abs(ytrue - ypred) > 1e-3).sum() == 0
+        #if b == batches_per_epoch:
+        #    break
+        if b == 10:
+            break
+
+    avg_loss = 0.
+    avg_acc = 0.
     print('Start training...')
     nb_updates = 0
     nb_reduce_lr = 0
