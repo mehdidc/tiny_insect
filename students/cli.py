@@ -450,39 +450,18 @@ def _get_data(data_source, batchSize=32, augment=True):
     imageSize = 32
     nb_classes = 10
     nz = 100
-    nb_epochs = 200
+    if data_source.endswith('_big'):
+        nb_epochs = 400
+    else:
+        nb_epochs = 200
     generators = {
-        'aux1': '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth', #trained using pretrained_aux_dcgan_32.py
-        'aux2': '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth', #trained using pretrained_aux_dcgan_32.py
-        'aux3': '../generators/samples/samples_cond_dcgan_cls_32/netG_epoch_72.pth' # trained using cond_dcgan_cls_32.py
+        'aux1' : '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth',  #trained using pretrained_aux_dcgan_32.py
+        'aux2' : '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth',     #trained using pretrained_aux_dcgan_32.py
+        'aux3' : '../generators/samples/samples_cond_dcgan_cls_32/netG_epoch_72.pth',        #trained using cond_dcgan_cls_32.py
+        'cond1': '../generators/samples/samples_cond_dcgan_cifar10/netG_epoch_329.pth',      #trained using cond_dcgan_32.py
     }
     classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
-    if  ' ' in data_source:
-        data_sources = data_source.split(' ')
-        dl_trains = []
-        yt_trains = []
-        nb_trains = []
-        bs = batchSize // len(data_sources)
-        for data_source in data_sources:
-            dl_train, dl_valid, yt_train, nb_train = _get_data(data_source, batchSize=bs, augment=False)
-            dl_trains.append(dl_train)
-            yt_trains.append(yt_train)
-            nb_trains.append(nb_train)
-        dataloader_train = MergeLoader(dl_trains)
-        dataloader_valid = dl_valid
-        assert len(set(nb_trains)) == 1, nb_trains
-        nb_train_examples = nb_trains[0]
-        sz = sum(yt.size(0) for yt in yt_trains)
-        yteacher_train = torch.zeros(sz, nb_classes)
-        for t, yt in enumerate(yt_trains):
-            k = t * bs  
-            for i in range(yt.size(0) // bs):
-                yteacher_train[k:k + bs] = yt[i * bs: (i + 1) * bs]
-                k += batchSize
-        dataloader_train = DataAugmentationLoader(dataloader_train, nb_epochs=nb_epochs)
-        return dataloader_train, dataloader_valid, yteacher_train, nb_train_examples
-
-    elif ',' in data_source:
+    if ',' in data_source:
         data_sources = data_source.split(',')
         dl_trains = []
         yt_trains = []
@@ -508,9 +487,10 @@ def _get_data(data_source, batchSize=32, augment=True):
             o += per_epoch
         dataloader_train = DataAugmentationLoaders(dl_trains, nb_epochs=nb_epochs)
         return dataloader_train, dataloader_valid, yteacher_train, nb_train_examples
-
-    generator = generators.get(data_source)
-    if data_source == 'dataset_simple':
+    
+    data_source_prefix = data_source.replace('_big', '')
+    generator = generators.get(data_source_prefix)
+    if data_source_prefix == 'dataset_simple':
         transform = transforms.Compose([
             transforms.Scale(imageSize),
             transforms.CenterCrop(imageSize),
@@ -519,7 +499,7 @@ def _get_data(data_source, batchSize=32, augment=True):
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ])
-    elif data_source == 'dataset_raw':
+    elif data_source_prefix == 'dataset_raw':
         transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
@@ -533,14 +513,13 @@ def _get_data(data_source, batchSize=32, augment=True):
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
         ])
-
     transform_valid = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
     dataset = dset.CIFAR10(root=dataroot, download=True, transform=transform)
     dataset_valid = dset.CIFAR10(root=dataroot, download=True, transform=transform_valid)
-    if data_source in ('dataset', 'dataset_old', 'dataset_simple', 'dataset_raw'):
+    if data_source_prefix in ('dataset', 'dataset_old', 'dataset_simple', 'dataset_raw'):
         predictions_filename = 'predictions/{}.th'.format(data_source)
         perm = np.arange(len(dataset))
         np.random.shuffle(perm)
@@ -557,7 +536,7 @@ def _get_data(data_source, batchSize=32, augment=True):
             dataset_valid, batch_size=batchSize,
             sampler=SamplerFromIndices(dataset, perm_valid),
             num_workers=8)
-    elif data_source == 'tiny':
+    elif data_source_prefix == 'tiny':
         predictions_filename = 'predictions/{}.th'.format(data_source)
         perm = np.arange(len(dataset))
         np.random.shuffle(perm)
@@ -676,7 +655,6 @@ def _get_data(data_source, batchSize=32, augment=True):
 def _train_model(params):
     nb_passes = 10
     batchSize = 32 
-    nb_epochs = 200
     imageSize = 32
     nb_classes = 10
     nb_epochs_before_reduce = 10
@@ -749,6 +727,8 @@ def _train_model(params):
     
     dataloader_train, dataloader_valid, yteacher_train, nb_train_examples = _get_data(data_source=data_source, batchSize=batchSize)
     batches_per_epoch = nb_train_examples // batchSize
+    nb_epochs = yteacher_train.size(0) // nb_train_examples
+    print('Nb epochs : {}'.format(nb_epochs))
     #check if predictions save are correect
     print('check if predictions are correct')
     for b, (X, y) in enumerate(dataloader_train):
