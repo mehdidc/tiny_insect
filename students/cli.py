@@ -201,10 +201,12 @@ def insert(*, nb=1, data_source=None, model=None, bayesopt=False):
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
 
-def insert_best(*, data_source=None, model=None, top=1):
+def insert_best(*, data_source=None, model=None, top=1, data_source_from=None):
     db = load_db()
     jobs = db.jobs_with_state(SUCCESS)
     jobs = list(jobs)
+    if data_source_from:
+        jobs = [j for j in jobs if j['content']['data_source'] == data_source_from]
     X = [j['content'] for j in jobs]
     y = [np.max(j['stats']['valid_acc']) for j in jobs]
     indices = np.argsort(y)[::-1]
@@ -215,8 +217,8 @@ def insert_best(*, data_source=None, model=None, top=1):
         if data_source:
             params['data_source'] = data_source
         _check(params)
-        nb_inserted += db.safe_add_job(params, model=params['model'])
         print(params, value)
+        nb_inserted += db.safe_add_job(params, model=params['model'])
     print('Inserted {} row(s) in the db'.format(nb_inserted))
 
 
@@ -339,7 +341,7 @@ def _transform(dlist):
 
 
 def _check(params):
-    allowed = ('aux1', 'aux2', 'dataset', 'dataset_simple', 'aux3', 'tiny')
+    allowed = ('aux1', 'aux2', 'dataset', 'dataset_simple', 'aux3', 'tiny', 'dataset_raw')
     data_source = params['data_source']
     if ',' in data_source:
         for ds in data_source.split(','):
