@@ -28,11 +28,12 @@ from torch.nn.init import xavier_uniform
 sys.path.append('../generators')
 from loader import ImageFolder
 
-from compressor import ConvStudent
-from compressor import norm
-from compressor import get_acc
-from compressor import Gen
-from compressor import GeneratorLoader
+from cli import ConvFcStudent
+from cli import Conv2FcStudent
+from cli import norm
+from cli import get_acc
+from cli import Gen
+from data import GeneratorLoader
 
 def student(*,student='student.th', classifier='/home/mcherti/work/code/external/densenet.pytorch/model/model.th',
             dataroot='/home/mcherti/work/data/cifar10', batchSize=32, imageSize=32, nb_classes=10):
@@ -40,25 +41,21 @@ def student(*,student='student.th', classifier='/home/mcherti/work/code/external
     sys.path.append(os.path.dirname(classifier))
     sys.path.append(os.path.dirname(classifier) + '/..')
     clf = torch.load(classifier)
-
     if 'cifar10' in dataroot:
         mean = [0.49139968, 0.48215827, 0.44653124]
         std = [0.24703233, 0.24348505, 0.26158768]
     else:
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
-    
     clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
     clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
-    
     nc = 3
     w = imageSize
     h = imageSize
     no = nb_classes
     nbf = 512
     fc = 1200
-    S = ConvStudent(nc, w, h, no, nbf=nbf, fc=fc)
-    S.load_state_dict(torch.load(student))
+    S = torch.load(student)
     S = S.cuda()
     S.train(False)
     input = torch.zeros(batchSize, 3, imageSize, imageSize)

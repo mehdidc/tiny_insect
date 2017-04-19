@@ -33,15 +33,15 @@ from loader import Tiny
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', required=True, help='cifar10 | lsun | imagenet | folder | lfw ')
-    parser.add_argument('--dataroot', required=True, help='path to dataset')
+    parser.add_argument('--dataset', required=False, help='cifar10 | lsun | imagenet | folder | lfw ', default='cifar10')
+    parser.add_argument('--dataroot', required=False, help='path to dataset', default='/home/mcherti/work/data/cifar10')
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
-    parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
-    parser.add_argument('--imageSize', type=int, default=64, help='the height / width of the input image to network')
+    parser.add_argument('--batchSize', type=int, default=32, help='input batch size')
+    parser.add_argument('--imageSize', type=int, default=32, help='the height / width of the input image to network')
     parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
     parser.add_argument('--ngf', type=int, default=64)
     parser.add_argument('--ndf', type=int, default=64)
-    parser.add_argument('--niter', type=int, default=25, help='number of epochs to train for')
+    parser.add_argument('--niter', type=int, default=1000, help='number of epochs to train for')
     parser.add_argument('--lr', type=float, default=0.0002, help='learning rate, default=0.0002')
     parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
     parser.add_argument('--cuda'  , action='store_true', help='enables cuda')
@@ -49,8 +49,8 @@ if __name__ == '__main__':
     parser.add_argument('--netG', default='', help="path to netG (to continue training)")
     parser.add_argument('--netD', default='', help="path to netD (to continue training)")
     parser.add_argument('--outf', default='.', help='folder to output images and model checkpoints')
-
     opt = parser.parse_args()
+    opt.cuda = True
     print(opt)
 
     try:
@@ -275,6 +275,8 @@ if __name__ == '__main__':
     # setup optimizer
     optimizerD = optim.Adam(netD.parameters(), lr = opt.lr, betas = (opt.beta1, 0.999))
     optimizerG = optim.Adam(netG.parameters(), lr = opt.lr, betas = (opt.beta1, 0.999))
+    aux_criterion = nn.CrossEntropyLoss().cuda()
+
 
     for epoch in range(opt.niter):
         for i, (data_A, data_B) in enumerate(zip(dataloader_A, dataloader_B)):
@@ -344,7 +346,7 @@ if __name__ == '__main__':
             netG.zero_grad()
             label.data.fill_(real_label) # fake labels are real for generator cost
             output = netD(fake_with_class)
-            errG = criterion(output, label)
+            errG = criterion(output, label) + aux_criterion(y_pred[:, :, 0, 0], Variable(input_B_classes.view(-1)).cuda())
             errG.backward()
             D_G_z2 = output.data.mean()
             optimizerG.step()

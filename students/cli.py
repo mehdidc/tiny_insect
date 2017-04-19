@@ -197,6 +197,35 @@ class Conv2FcStudent(nn.Module):
         return x
 
 
+class Conv2FcBLStudent(nn.Module):
+    def __init__(self, nc, w, h, no, nbf1=512, nbf2=512, fc1=250, fc2=250, sf=5):
+        super(Conv2FcBLStudent, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(nc, nbf1, sf),
+            nn.ReLU(True),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(nbf1, nbf2, sf),
+            nn.ReLU(True),
+            nn.MaxPool2d(2),
+
+        )
+        wout = ((w - sf + 1) // 2 - sf + 1) // 2
+        hout = ((h - sf + 1) // 2 - sf + 1) // 2
+        self.fc = nn.Sequential(
+            nn.Linear(wout * hout * nbf2, fc1),
+            nn.Linear(fc1, fc2),
+            nn.ReLU(True),
+            nn.Linear(fc2, no)
+        )
+        
+    def forward(self, input):
+        x = self.features(input)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+
+
 class Conv2FullyStudent(nn.Module):
     def __init__(self, nc, w, h, no, nbf1=512, nbf2=512, nbf3=512, sf=5):
         super(Conv2FullyStudent, self).__init__()
@@ -223,6 +252,7 @@ class Conv2FullyStudent(nn.Module):
         x = x.view(x.size(0), -1)
         x = self.fc(x)
         return x
+
 
 def weights_init(m, xavier=False):
     classname = m.__class__.__name__
@@ -305,7 +335,7 @@ def _sample(nb=1, data_source=None, model=None, bayesopt=False):
 
 def _sample_unif(rng, model=None, data_source=None):
     if not model:
-        model = rng.choice(('convfc', 'conv2fc', 'conv2fully'))
+        model = rng.choice(('convfc', 'conv2fc', 'conv2fully', 'conv2fcbl'))
     if not data_source:
         data_source = rng.choice((
             'dataset', 
@@ -335,12 +365,26 @@ def _sample_unif(rng, model=None, data_source=None):
         sf = rng.choice((3, 5))
         nbf1 = rng.choice((32, 64, 96, 128, 192, 256, 512))
         nbf2 = rng.choice((32, 64, 96, 128, 192, 256, 512))
-        fc = rng.randint(1, 10) * 100
+        fc = rng.randint(1, 10) * 1000
         hypers = {
             'nbf1': nbf1,
             'nbf2': nbf2,
             'sf': sf,
             'fc': fc,
+        }
+    elif model == 'conv2fcbl':
+
+        sf = rng.choice((3, 5))
+        nbf1 = rng.choice((32, 64, 96, 128, 192, 256, 512))
+        nbf2 = rng.choice((32, 64, 96, 128, 192, 256, 512))
+        fc1 = rng.randint(1, 10) * 100
+        fc2 = rng.randint(1, 10) * 100
+        hypers = {
+            'nbf1': nbf1,
+            'nbf2': nbf2,
+            'sf': sf,
+            'fc1': fc1,
+            'fc2': fc2
         }
     elif model == 'conv2fully':
         sf = rng.choice((3, 5))
@@ -582,8 +626,8 @@ def _get_data(data_source, batchSize=32, augment=True):
         'aux1' : '../generators/samples/samples_pretrained_aux_dcgan_32/netG_epoch_35.pth',  #trained using pretrained_aux_dcgan_32.py
         'aux2' : '../generators/samples/samples_pretrained_aux_cifar/netG_epoch_72.pth',     #trained using pretrained_aux_dcgan_32.py
         'aux3' : '../generators/samples/samples_cond_dcgan_cls_32/netG_epoch_72.pth',        #trained using cond_dcgan_cls_32.py
-        'cond1': '../generators/samples/samples_cond_dcgan_cifar10/netG_epoch_329.pth',      #trained using cond_dcgan_32.py
-        'tiny_dt': '../generators/samples/samples_cond_dcgan_dtcls_2_32/netG_epoch_10.pth'
+        'cond1': '../generators/samples/samples_cond_dcgan_cifar10_bs32/netG_epoch_97.pth',      #trained using cond_dcgan_32.py
+        'tiny_dt': '../generators/samples/samples_cond_dcgan_dtcls_3_32/netG_epoch_56.pth'
     }
     classifier = '/home/mcherti/work/code/external/densenet.pytorch/model/model.th'
     if ',' in data_source:
@@ -707,7 +751,7 @@ def _get_data(data_source, batchSize=32, augment=True):
         G = GenDt(nz=nz, nc=3, nb_classes=nb_classes)
         G.load_state_dict(torch.load(generator))
         G = G.cuda()
-
+    
         z = torch.randn(batchSize, nz, 1, 1)
         z = Variable(z)
         z = z.cuda()
@@ -790,20 +834,14 @@ def _get_data(data_source, batchSize=32, augment=True):
     else:
         yteacher_train = torch.load(predictions_filename)
     """
-    # Check the accuracy of the teacher on the generated data
-    # good if high
-    accs = []
-    for X, y in dataloader_train:
-        input.data.resize_(X.size()).copy_(X)
-        y = y.view(-1, 1).cpu()
-        y_true = torch.zeros(y.size(0), nb_classes)
-        y_true.scatter_(1, y, 1)
-        y_pred = clf(norm(input, clf_mean, clf_std)).data.cpu()
-        acc = get_acc(y_true, y_pred)
-        accs.append(acc)
-        print(np.mean(accs))
+    for b, (X, y) in enumerate(dataloader_train):
+        # visualize samples (uncomment to execute)
+        from machinedesign.viz import grid_of_images
+        from skimage.io import imsave
+        img = grid_of_images(X.cpu().numpy(), normalize=True)
+        imsave('sample.png', img)
+        break
     """
-    
     """
     # check if repassing through dataloader_train is determenistic
     # (uncomment to execute)
@@ -868,6 +906,12 @@ def _train_model(params):
         nbf2 = hypers['nbf2']
         fc = hypers['fc']
         S = Conv2FcStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, fc=fc)
+    elif m == 'conv2fcbl':
+        nbf1 = hypers['nbf1']
+        nbf2 = hypers['nbf2']
+        fc1 = hypers['fc1']
+        fc2 = hypers['fc2']
+        S = Conv2FcBLStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, fc1=fc1, fc2=fc2)
     elif m == 'mlp':
         fc1 = hypers['fc1']
         fc2 = hypers['fc2']
@@ -916,7 +960,23 @@ def _train_model(params):
         #    break
         if b == 10:
             break
-
+    """
+    # Check the accuracy of the teacher on the generated data
+    # good if high
+    accs = []
+    input = torch.zeros(batchSize, 3, imageSize, imageSize)
+    input = Variable(input)
+    input = input.cuda()
+    for X, y in dataloader_train:
+        input.data.resize_(X.size()).copy_(X)
+        y = y.view(-1, 1).cpu()
+        y_true = torch.zeros(y.size(0), nb_classes)
+        y_true.scatter_(1, y, 1)
+        y_pred = clf(norm(input, clf_mean, clf_std)).data.cpu()
+        acc = get_acc(y_true, y_pred)
+        accs.append(acc)
+        print(np.mean(accs))
+    """
     avg_loss = 0.
     avg_acc = 0.
     print('Start training...')
@@ -1086,6 +1146,10 @@ def manual():
     nb_inserted += db.safe_add_job(params, model=params['model'])
     params['data_source'] = 'dataset,aux2'
     nb_inserted += db.safe_add_job(params, model=params['model'])
+    params['data_source'] = 'dataset,aux2,aux3'
+    nb_inserted += db.safe_add_job(params, model=params['model'])
+    params['data_source'] = 'dataset,aux2,tiny'
+    nb_inserted += db.safe_add_job(params, model=params['model'])
 
     job = db.get_job_by_summary('585e3be7a561b047bd2b08ad6bd52e6a')
     params = job['content']
@@ -1094,6 +1158,7 @@ def manual():
     params['data_source'] = 'dataset_raw,aux2'
     nb_inserted += db.safe_add_job(params, model=params['model'])
     print(nb_inserted)
+
 
 if __name__ == '__main__':
     result = run(train, insert, clean, train_random, sample, insert_best, resume, export, manual)
