@@ -47,6 +47,7 @@ from data import MergeLoader
 from data import DataAugmentationLoaders
 from data import GeneratorLoaderDomainTransfer
 
+
 sys.path.append('../generators')
 
 
@@ -254,6 +255,38 @@ class Conv2FullyStudent(nn.Module):
         return x
 
 
+class SqueezedStudent(nn.Module):
+    def __init__(self, nc, w, h, no, nbf=32, fc=1000):
+        super(SqueezedStudent, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(nc, nbf, 5),
+            nn.ELU(True),
+            nn.Conv2d(nbf, nbf, 5),
+            nn.ELU(True),
+            nn.Conv2d(nbf, nbf, 5),
+            nn.ELU(True),
+            nn.Conv2d(nbf, nbf, 5),
+            nn.ELU(True),
+            nn.Conv2d(nbf, nbf, 5),
+            nn.ELU(True),
+            nn.Conv2d(nbf, nbf, 5),
+            nn.ELU(True),
+            nn.Conv2d(nbf, nbf, 5),
+            nn.ELU(True),
+            nn.Conv2d(nbf, nbf, 4),
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(nbf , fc),
+            nn.ELU(True),
+            nn.Linear(fc, no)
+        )
+    def forward(self, input):
+        x = self.features(input)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+
+
 def weights_init(m, xavier=False):
     classname = m.__class__.__name__
     if classname.find('Conv2d') != -1:
@@ -268,6 +301,7 @@ def weights_init(m, xavier=False):
     elif classname.find('Linear') != -1:
         xavier_uniform(m.weight.data, gain=math.sqrt(2.))
         m.bias.data.fill_(0)
+
 
 def get_acc(pred, true):
     _, pred_classes = pred.max(1)
@@ -335,7 +369,13 @@ def _sample(nb=1, data_source=None, model=None, bayesopt=False):
 
 def _sample_unif(rng, model=None, data_source=None):
     if not model:
-        model = rng.choice(('convfc', 'conv2fc', 'conv2fully', 'conv2fcbl'))
+        model = rng.choice((
+            'convfc', 
+            'conv2fc', 
+            'conv2fully', 
+            'conv2fcbl',
+            'sqz',
+        ))
     if not data_source:
         data_source = rng.choice((
             'dataset', 
@@ -373,7 +413,6 @@ def _sample_unif(rng, model=None, data_source=None):
             'fc': fc,
         }
     elif model == 'conv2fcbl':
-
         sf = rng.choice((3, 5))
         nbf1 = rng.choice((32, 64, 96, 128, 192, 256, 512))
         nbf2 = rng.choice((32, 64, 96, 128, 192, 256, 512))
@@ -397,6 +436,10 @@ def _sample_unif(rng, model=None, data_source=None):
             'nbf3': nbf3,
             'sf': sf,
         }
+    elif model == 'sqz':
+        nbf = rng.randint(5, 64)
+        fc = rng.randint(1, 100) * 100
+        hypers = {'nbf': nbf, 'fc': fc}
     elif model == 'mlp':
         fc1 = rng.randint(1, 10) * 100
         fc2 = rng.randint(1, 100) * 100
@@ -479,7 +522,7 @@ def _transform(dlist, extra=None):
 
 def _check(params):
     allowed = (
-         'aux1', 
+        'aux1', 
         'aux2', 
         'dataset', 
         'dataset_simple', 
@@ -820,13 +863,6 @@ def _get_data(data_source, batchSize=32, augment=True):
         for b, (X, y) in enumerate(dataloader_train):
             if b % 100 == 0:
                 print('batch {}/{}'.format(b, len(dataloader_train)))
-            """
-            # visualize samples (uncomment to execute)
-            from machinedesign.viz import grid_of_images
-            from skimage.io import imsave
-            img = grid_of_images(X.cpu().numpy(), normalize=True)
-            imsave('sample.png', img)
-            """
             input.data.resize_(X.size()).copy_(X)
             y_true = clf(norm(input, clf_mean, clf_std))     
             yteacher_train[b * batchSize:b * batchSize + input.size(0)].copy_(y_true.data)
@@ -921,6 +957,10 @@ def _train_model(params):
         nbf2 = hypers['nbf2']
         nbf3 = hypers['nbf3']
         S = Conv2FullyStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, nbf3=nbf3)
+    elif m == 'sqz':
+        nbf = hypers['nbf']
+        fc = hypers['fc']
+        S = SqueezedStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc=fc)
     else:
         raise ValueError('Wrong model : {}'.format(m))
     
@@ -1063,9 +1103,11 @@ def _train_model(params):
     }
     return result
 
+
 def export(filename='jobs.json'):
     df = _build_jobs_df()
     df.to_json(filename)
+
 
 def _build_jobs_df():
     import glob
@@ -1136,10 +1178,20 @@ def _moving(l):
 
 
 def manual():
+    import copy
+
     nb_inserted = 0
     db = load_db()
     job = db.get_job_by_summary('91e2c05e100ae416e69b7e983c5be906')
     params = job['content']
+    params['data_source'] = 'dataset,cond1'
+    nb_inserted += db.safe_add_job(params, model=params['model'])
+    params['data_source'] = 'dataset,tiny_dt'
+    nb_inserted += db.safe_add_job(params, model=params['model'])
+    params['data_source'] = 'dataset_simple,cond1'
+    nb_inserted += db.safe_add_job(params, model=params['model'])
+    params['data_source'] = 'dataset_simple,tiny_dt'
+    nb_inserted += db.safe_add_job(params, model=params['model'])
     params['hypers']['fc'] = 1200
     nb_inserted += db.safe_add_job(params, model=params['model'])
     params['data_source'] = 'dataset'
@@ -1150,7 +1202,14 @@ def manual():
     nb_inserted += db.safe_add_job(params, model=params['model'])
     params['data_source'] = 'dataset,aux2,tiny'
     nb_inserted += db.safe_add_job(params, model=params['model'])
-
+    params['data_source'] = 'dataset,cond1'
+    nb_inserted += db.safe_add_job(params, model=params['model'])
+    params['data_source'] = 'dataset,tiny_dt'
+    nb_inserted += db.safe_add_job(params, model=params['model'])
+    params['data_source'] = 'dataset_simple,cond1'
+    nb_inserted += db.safe_add_job(params, model=params['model'])
+    params['data_source'] = 'dataset_simple,tiny_dt'
+    nb_inserted += db.safe_add_job(params, model=params['model'])
     job = db.get_job_by_summary('585e3be7a561b047bd2b08ad6bd52e6a')
     params = job['content']
     params['data_source'] = 'dataset_simple,aux2'
@@ -1161,4 +1220,8 @@ def manual():
 
 
 if __name__ == '__main__':
-    result = run(train, insert, clean, train_random, sample, insert_best, resume, export, manual)
+    result = run(
+        train, insert, clean, 
+        train_random, sample, insert_best, 
+        resume, export, manual
+    )
