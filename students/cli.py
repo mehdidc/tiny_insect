@@ -585,7 +585,14 @@ def clean():
             print('make the state of {} available'.format(job['summary']))
             db.modify_state_of(job['summary'], AVAILABLE)
 
-
+    jobs = db.jobs_with(state=SUCCESS)
+    for job in jobs:
+         max_valid_acc = max(job['stats']['valid_acc'])
+         if max_valid_acc < 0.8:
+             filename = 'jobs/{}/student.th'.format(job['summary'])
+             if os.path.exists(filename):
+                print('removing {}'.format(job['summary']))
+                os.remove(filename)
 
 def train(id, *, budget_secs=3600. * 6):
     job_summary = id
@@ -933,41 +940,8 @@ def _train_model(params):
     clf_mean = Variable(torch.FloatTensor(mean).view(1, -1, 1, 1)).cuda()
     clf_std = Variable(torch.FloatTensor(std).view(1, -1, 1, 1)).cuda()
     
-    m = params['model']
-    if m == 'convfc':
-        nbf = hypers['nbf']
-        fc1 = hypers['fc1']
-        fc2 = hypers['fc2']
-        S = ConvFcStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc1=fc1, fc2=fc2)
-    elif m == 'conv2fc':
-        nbf1 = hypers['nbf1']
-        nbf2 = hypers['nbf2']
-        fc = hypers['fc']
-        S = Conv2FcStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, fc=fc)
-    elif m == 'conv2fcbl':
-        nbf1 = hypers['nbf1']
-        nbf2 = hypers['nbf2']
-        fc1 = hypers['fc1']
-        fc2 = hypers['fc2']
-        S = Conv2FcBLStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, fc1=fc1, fc2=fc2)
-    elif m == 'mlp':
-        fc1 = hypers['fc1']
-        fc2 = hypers['fc2']
-        S = MLPStudent(3, imageSize, imageSize, nb_classes, fc1=fc1, fc2=fc2)
-    elif m == 'conv2fully':
-        nbf1 = hypers['nbf1']
-        nbf2 = hypers['nbf2']
-        nbf3 = hypers['nbf3']
-        S = Conv2FullyStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, nbf3=nbf3)
-    elif m == 'sqz':
-        nbf = hypers['nbf']
-        fc = hypers['fc']
-        S = SqueezedStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc=fc)
-    else:
-        raise ValueError('Wrong model : {}'.format(m))
-    
+    S = _build_model(params)
     print('Nb of params : {}'.format(_get_nb_params(S)))
-
     if params.get('xavier') == True:
         S.apply(partial(weights_init, xavier=True))
     else:
@@ -1114,6 +1088,43 @@ def _train_model(params):
     return result
 
 
+def _build_model(params, imageSize=32, nb_classes=10):
+    hypers = params['hypers']
+    m = params['model']
+    if m == 'convfc':
+        nbf = hypers['nbf']
+        fc1 = hypers['fc1']
+        fc2 = hypers['fc2']
+        S = ConvFcStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc1=fc1, fc2=fc2)
+    elif m == 'conv2fc':
+        nbf1 = hypers['nbf1']
+        nbf2 = hypers['nbf2']
+        fc = hypers['fc']
+        S = Conv2FcStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, fc=fc)
+    elif m == 'conv2fcbl':
+        nbf1 = hypers['nbf1']
+        nbf2 = hypers['nbf2']
+        fc1 = hypers['fc1']
+        fc2 = hypers['fc2']
+        S = Conv2FcBLStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, fc1=fc1, fc2=fc2)
+    elif m == 'mlp':
+        fc1 = hypers['fc1']
+        fc2 = hypers['fc2']
+        S = MLPStudent(3, imageSize, imageSize, nb_classes, fc1=fc1, fc2=fc2)
+    elif m == 'conv2fully':
+        nbf1 = hypers['nbf1']
+        nbf2 = hypers['nbf2']
+        nbf3 = hypers['nbf3']
+        S = Conv2FullyStudent(3, imageSize, imageSize, nb_classes, nbf1=nbf1, nbf2=nbf2, nbf3=nbf3)
+    elif m == 'sqz':
+        nbf = hypers['nbf']
+        fc = hypers['fc']
+        S = SqueezedStudent(3, imageSize, imageSize, nb_classes, nbf=nbf, fc=fc)
+    else:
+        raise ValueError('Wrong model : {}'.format(m))
+    return S
+
+
 def export(filename='jobs.json'):
     df = _build_jobs_df()
     df.to_json(filename)
@@ -1131,7 +1142,6 @@ def _build_jobs_df():
     from lightjob.cli import load_db
     from lightjob.db import SUCCESS
     from lightjob.utils import summarize
-
     db = load_db()
     rows = []
     jobs = db.jobs_with(state=SUCCESS)
@@ -1143,6 +1153,7 @@ def _build_jobs_df():
         df_stats = pd.read_csv(stats)
         df_valid = pd.read_csv(os.path.join(folder, 'valid.csv'))
         df_valid = df_valid[df_valid.columns[0]].values
+        params = job['content']
         hypers = job['content']['hypers']
         start_time = job['life'][0]['dt']
         end_time = job['life'][0]['dt']    
@@ -1163,7 +1174,7 @@ def _build_jobs_df():
         row['n_epochs'] = (len(df_stats)*32)/40000
         row['hypers_id'] = summarize(hypers)
         filename = os.path.join(folder, 'student.th')
-        row['nb_params'] = _get_nb_params_from_filename(filename) 
+        row['nb_params'] = _get_nb_params(_build_model(params))
         rows.append(row)
     df = pd.DataFrame(rows)
     return df
