@@ -375,6 +375,7 @@ def _sample_unif(rng, model=None, data_source=None):
             'conv2fully', 
             'conv2fcbl',
             'sqz',
+            'mlp',
         ))
     if not data_source:
         data_source = rng.choice((
@@ -623,7 +624,7 @@ def _get_outdir(job_summary):
     return 'jobs/{}'.format(job_summary)
 
 
-def train_random(*, data_source=None, model=None, bayesopt=False):
+def train_random(*, data_source=None, model=None, bayesopt=False, budget_secs=3600.):
     rng = random
     sample_func = partial(_sample_unif, data_source=data_source, model=model)
     if bayesopt:
@@ -632,7 +633,7 @@ def train_random(*, data_source=None, model=None, bayesopt=False):
         params = sample_func(rng)
     if data_source:
         params['data_source'] = data_source
-    params['budget_secs'] = 3600
+    params['budget_secs'] = budget_secs
     params['folder'] = 'out/tmp'
     print(params)
     _train_model(params)
@@ -909,6 +910,7 @@ def _train_model(params):
     algo = params['algo']
     lr = params['lr']
     momentum = params['momentum']
+    obj = params.get('obj', 'l2')
 
     budget_secs = float(params['budget_secs'])
     t0 = time.time()
@@ -1026,6 +1028,14 @@ def _train_model(params):
     last_reduced = 0
     valid_accs = []
     stats = defaultdict(list)
+    def l2(pred, true):
+        return ((y_pred - y_true) ** 2).mean()
+    def ce(pred, true):
+        return nn.CrossEntropyLoss()(pred, true.max(1)[1][:, 0])
+    if obj == 'l2':
+        crit = l2
+    elif obj == 'ce':
+        crit = ce
     for epoch in range(nb_epochs * nb_passes):
         print('Start epoch : {}'.format(epoch + 1))
         ep = epoch % nb_epochs
@@ -1038,7 +1048,7 @@ def _train_model(params):
             y_true = yteacher_train[idx:idx + input.size(0)]
             y_true = Variable(y_true).cuda()
             y_pred = S(input)
-            loss = ((y_pred - y_true) ** 2).mean()
+            loss = crit(y_pred, y_true)
             loss.backward()
             optimizer.step()
             dt = time.time() - t
