@@ -4,7 +4,6 @@
 # gen   :  takes (noise, onehot of the class) as input, produces an image.  it is trained to fool the discr  and to make the discr
 #          predict the correct class (which is fed as onehot to the generator) 
 from __future__ import print_function
-from skimage.io import imsave
 import argparse
 import os
 import random
@@ -18,7 +17,6 @@ import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
 from torch.autograd import Variable
-from keras.utils.np_utils import to_categorical
 
 from loader import ImageFolder
 
@@ -245,7 +243,7 @@ if __name__ == '__main__':
             output = netD(input)
             errD_real = (
                 criterion(nn.Sigmoid()(output[:, 0]), label) + 
-                0.1 * aux_criterion((output[:, 1:]), real_classes_var)
+                aux_criterion((output[:, 1:]), real_classes_var)
             )
 
             _, pred = output[:, 1:].max(1)
@@ -264,12 +262,11 @@ if __name__ == '__main__':
             output = netD(fake.detach())
             errD_fake = (
                 criterion(nn.Sigmoid()(output[:, 0]), label) + 
-                0.1 * aux_criterion((output[:, 1:]), real_classes_var)
+                aux_criterion((output[:, 1:]), real_classes_var)
             )
 
             _, pred = output[:, 1:].max(1)
             acc_fake = torch.mean((pred.data.cpu()[:, 0] == real_classes[:, 0]).float())
-
 
             errD_fake.backward()
             D_G_z1 = output.data.mean()
@@ -284,7 +281,7 @@ if __name__ == '__main__':
             output = netD(fake)
             errG = (
                 criterion(nn.Sigmoid()(output[:, 0]), label) + 
-                0.1 * aux_criterion((output[:, 1:]), real_classes_var)
+                aux_criterion((output[:, 1:]), real_classes_var)
             )
             errG.backward()
             D_G_z2 = output.data.mean()
